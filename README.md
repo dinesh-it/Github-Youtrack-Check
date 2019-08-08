@@ -48,7 +48,9 @@ UserName and password for the above mentioned database if preferred.
 * Configure your Github web hook with address pointing to `http://<yourhost>:3000/check_youtrack` for `push` event type.
     * Web Hook settings can be found at repository->settings->Hooks
 * You should start seeing the request coming to your microservice on each push to github now.
-* Start the youtrack check service
+* Start youtrack check service
 `perl youtrack_github_status.pl`
 
-Thats all, green tick marks or red cross mark will appear for each commits you push to gihub now.
+Thats all, green tick marks or red cross mark will appear for each commits you push to github now.
+
+Note: Configure both services via svc or systemd to auto restart.
