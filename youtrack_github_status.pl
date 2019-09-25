@@ -7,6 +7,9 @@ use LWP::UserAgent;
 use URI::Builder;
 use JSON::XS;
 
+# To make sure we get systemd logs immediately
+$| = 1;
+
 # Check of required ENV's available
 foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST GITHUB_TOKEN/) {
     if (!$ENV{$var}) {
@@ -14,12 +17,15 @@ foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST GITHUB_TOKEN
     }
 }
 
-my $sleep_time = 0;
+my $verified_tickets = {};
+my $sleep_time       = 5;
+
 while (1) {
     sleep($sleep_time);
     if (!check_all_commits()) {
         $sleep_time += 1;
-        $sleep_time = 10 if ($sleep_time > 10);
+        $sleep_time       = 10 if ($sleep_time > 10);
+        $verified_tickets = {};
         next;
     }
     $sleep_time = 0;
@@ -41,7 +47,7 @@ sub get_db_conn {
 
 sub get_commits {
     my $dbh    = get_db_conn();
-    my $sql    = qq/SELECT * FROM GitPushEvent ORDER BY created_epoch asc/;
+    my $sql    = qq/SELECT * FROM GitPushEvent WHERE event_type = 'push' ORDER BY created_epoch asc/;
     my $result = $dbh->selectall_arrayref($sql, {Slice => {}});
     return $result;
 }
@@ -74,6 +80,11 @@ sub get_youtrack_ticket {
     my $ticket_id = shift;
 
     return if (!$ticket_id);
+
+    if (exists $verified_tickets->{$ticket_id}) {
+        return $verified_tickets->{$ticket_id};
+    }
+
     my $yt_token = $ENV{YOUTRACK_TOKEN};
     my $yt_host  = $ENV{YOUTRACK_HOST};
 
@@ -92,9 +103,20 @@ sub get_youtrack_ticket {
 
     my $ticket = $ua->get($url);
 
-    return if (!$ticket->is_success);
+    if (!$ticket->is_success) {
+        print STDERR "YouTrack request Error: " . $ticket->code . ':' . $ticket->status_line . "\n";
+        die "Please check the token\n" if ($ticket->code == 401);
+
+        if ($ticket->code == 408 || $ticket->status_line =~ /Can't connect to/i) {
+            return 'WAIT';
+        }
+
+        $verified_tickets->{$ticket_id} = undef;
+        return;
+    }
 
     $yt->path_segments('youtrack', 'issue', $ticket_id);
+    $verified_tickets->{$ticket_id} = $yt->as_string;
 
     return $yt->as_string;
 }
@@ -140,11 +162,11 @@ sub github_status {
         delete_commit($commit_hash);
     }
     else {
-        print "Error updating status for: $gh_url\n";
-        print $res->decoded_content . "\n";
+        print STDERR "Error updating status for: $gh_url\n";
+        print STDERR $res->decoded_content . "\n";
 
-        # Re-try only if the request timed out
-        if ($res_code != 408) {
+        # Re-try only if the request timed out or internet issue
+        if ($res_code != 408 and $res->status_line !~ /Can't connect to/i) {
             delete_commit($commit_hash);
             print "This status update will not be re-tried\n";
         }
@@ -158,15 +180,24 @@ sub check_all_commits {
     foreach my $commit (@{$commits}) {
         my $yt_id = get_youtrack_id($commit->{message});
         if (!$yt_id) {
+            print STDERR "Message: \"$commit->{message}\" does not have a matching youtrack Id\n";
             github_status($commit, 'error');
             next;
         }
         my $ticket_url = get_youtrack_ticket($yt_id);
+
         if (!$ticket_url) {
+            print STDERR "Valid YouTrack ticket not found with Id: $yt_id\n";
             github_status($commit, 'error');
             next;
         }
         else {
+
+            if ($ticket_url eq 'WAIT') {
+                sleep 5;
+                next;
+            }
+
             github_status($commit, 'success', $ticket_url);
         }
     }

@@ -1,0 +1,9 @@
+DBI
+DBD::SQLite
+Digest::SHA
+IO::Socket::SSL
+JSON::XS
+LWP::UserAgent
+LWP::Protocol::https
+Mojolicious::Lite
+URI::Builder
