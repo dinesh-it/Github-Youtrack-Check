@@ -29,7 +29,7 @@ Host name with protocol where the youtrack is served eg: https://company.myjetbr
 
 #### GITHUB_TOKEN
 Github personal access token, Refer [Creating a personal access token](https://help.github.com/en/articles/creating-a-personal-access-token-for-the-command-line) at github help section.
-     * repo:status privilage should be enough for this token
+     * Repo privilage is required for this token
      
 #### GITHUB_SECRET
 The secret string used while creating github web hook.
@@ -41,16 +41,25 @@ This script uses a sqlite database file to store commit details temporarily, ple
 UserName and password for the above mentioned database if preferred.
 
 ## Usage
+* Install all the perl modules required using `cpanm` command
+`cpanm <modlist`
+
 * Start github web hook listener
-`perl github_web_hook.pl daemon -l https://*:3000`
+`./github_web_hook.pl daemon -l https://*:3000`
 
 * Now a micro service to listen for github web hook is ready at your server on port 3000.
-* Configure your Github web hook with address pointing to `http://<yourhost>:3000/check_youtrack` for `push` event type.
-    * Web Hook settings can be found at repository->settings->Hooks
+* Configure your Github web hook with address pointing to `http://<yourhost>:3000/check_youtrack` for `push` and `pull_request` event types.
+    * Web Hook settings can be found at Github.com Repository->settings->Hooks
 * You should start seeing the request coming to your microservice on each push to github now.
 * Start youtrack check service
-`perl youtrack_github_status.pl`
+`./youtrack_github_status.pl`
+
+* Start pull-commits service
+`./github_pull_commits.pl`
+
+Additionally there is a helper script to force check a pull request without waiting for github web hook.
+`./add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
 
 Thats all, green tick marks or red cross mark will appear for each commits you push to github now.
 
-Note: Configure both services via svc or systemd to auto restart.
+Note: Configure both services via daemon or systemd to auto restart.
