@@ -68,7 +68,6 @@ sub check_all_pull_requests {
 
         if (!$commits) {
             if (!$no_delete) {
-                print "Deleting this entry\n";
                 delete_pull_request($project, $commits_url);
             }
             else {
