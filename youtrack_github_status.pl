@@ -131,9 +131,14 @@ sub github_status {
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");
 
+    my $desc = 'Commit message mentions a valid Youtrack ticket';
+    if($status eq 'error') {
+        $desc = 'Commit message does not mention a valid Youtrack ticket';
+    }
+
     my $resp_body = {
         "context"     => "ci/chk-youtrack",
-        "description" => 'Commit message should have valid Youtrack ticket',
+        "description" => $desc,
         "state"       => $status,
     };
 
