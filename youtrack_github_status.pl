@@ -6,6 +6,7 @@ use DBI;
 use LWP::UserAgent;
 use URI::Builder;
 use JSON::XS;
+use HTTP::Date;
 
 # To make sure we get systemd logs immediately
 $| = 1;
@@ -22,13 +23,8 @@ my $sleep_time       = 5;
 
 while (1) {
     sleep($sleep_time);
-    if (!check_all_commits()) {
-        $sleep_time += 1;
-        $sleep_time       = 10 if ($sleep_time > 10);
-        $verified_tickets = {};
-        next;
-    }
-    $sleep_time = 0;
+    $verified_tickets = {};
+    check_all_commits();
 }
 
 # ============================================================================ #
@@ -104,11 +100,30 @@ sub get_youtrack_ticket {
     my $ticket = $ua->get($url);
 
     if (!$ticket->is_success) {
-        print STDERR "YouTrack request Error: " . $ticket->code . ':' . $ticket->status_line . "\n";
-        die "Please check the token\n" if ($ticket->code == 401);
+        my $status_code = $ticket->code;
+        print STDERR "YouTrack request Error: $status_code :" . $ticket->status_line . "\n";
+        die "Please check the token\n" if ($status_code == 401);
 
-        if ($ticket->code == 408 || $ticket->status_line =~ /Can't connect to/i) {
-            return 'WAIT';
+        if ($status_code == 408 || $status_code == 503 || $ticket->status_line =~ /Can't connect to/i) {
+
+            my $retry_after = $ticket->header("Retry-After");
+            if ($retry_after) {
+                print STDERR "Received Retry-After header value: $retry_after\n";
+                if ($retry_after =~ /^\d+$/) {
+                    $sleep_time = $retry_after;
+                }
+                else {
+                    $sleep_time = str2time($retry_after) - time;
+                }
+            }
+            else {
+                # Wait exponentially till 60 minutes
+                $sleep_time = 1 if (!$sleep_time);
+                $sleep_time = $sleep_time * 2;
+                $sleep_time = 3600 if ($sleep_time > 3600);
+            }
+            print "Setting sleep time to $sleep_time seconds\n";
+            return "WAIT";
         }
 
         $verified_tickets->{$ticket_id} = undef;
@@ -124,7 +139,7 @@ sub get_youtrack_ticket {
 # ============================================================================ #
 
 sub github_status {
-    my ($commit, $status, $link) = @_;
+    my ($commit, $status, $link, $yt_id) = @_;
 
     my $gh_token = $ENV{GITHUB_TOKEN};
 
@@ -132,8 +147,11 @@ sub github_status {
     $ua->default_header('Authorization' => "Bearer $gh_token");
 
     my $desc = 'Commit message mentions a valid Youtrack ticket';
-    if($status eq 'error') {
-        $desc = 'Commit message does not mention a valid Youtrack ticket';
+    if ($status eq 'error') {
+        $desc = 'No valid YouTrack ticket - Commit message does not mention a valid Youtrack ticket';
+    }
+    elsif ($status eq 'pending') {
+        $desc = "Waiting for youtrack - Commit message mentions a ticket";
     }
 
     my $resp_body = {
@@ -142,7 +160,13 @@ sub github_status {
         "state"       => $status,
     };
 
-    $resp_body->{target_url} = $link if ($link);
+    if ($yt_id) {
+        $desc = $yt_id . ' - ' . $desc;
+    }
+
+    if ($link) {
+        $resp_body->{target_url} = $link;
+    }
 
     my $commit_hash = $commit->{commit_id};
     my $gh_owner    = $commit->{owner};
@@ -164,7 +188,7 @@ sub github_status {
     my $res_code = $res->code;
 
     if ($res->is_success) {
-        delete_commit($commit_hash);
+        delete_commit($commit_hash) if ($status ne 'pending');
     }
     else {
         print STDERR "Error updating status for: $gh_url\n";
@@ -182,6 +206,13 @@ sub github_status {
 
 sub check_all_commits {
     my $commits = get_commits();
+
+    if (!@{$commits}) {
+        $sleep_time++;
+        $sleep_time = 10 if ($sleep_time > 10);
+        return;
+    }
+
     foreach my $commit (@{$commits}) {
         my $yt_id = get_youtrack_id($commit->{message});
         if (!$yt_id) {
@@ -196,16 +227,18 @@ sub check_all_commits {
             github_status($commit, 'error');
             next;
         }
+        elsif ($ticket_url eq 'WAIT') {
+            github_status($commit, 'pending', $ticket_url, $yt_id);
+
+            # YouTrack not available or network issue, sleep and try again later
+            return;
+        }
         else {
-
-            if ($ticket_url eq 'WAIT') {
-                sleep 5;
-                next;
-            }
-
-            github_status($commit, 'success', $ticket_url);
+            github_status($commit, 'success', $ticket_url, $yt_id);
         }
     }
+
+    $sleep_time = 0;
 }
 
 # ============================================================================ #
