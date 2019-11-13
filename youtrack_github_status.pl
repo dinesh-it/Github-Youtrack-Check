@@ -154,15 +154,15 @@ sub github_status {
         $desc = "Waiting for youtrack - Commit message mentions a ticket";
     }
 
+    if ($yt_id) {
+        $desc = $yt_id . ' - ' . $desc;
+    }
+
     my $resp_body = {
         "context"     => "ci/chk-youtrack",
         "description" => $desc,
         "state"       => $status,
     };
-
-    if ($yt_id) {
-        $desc = $yt_id . ' - ' . $desc;
-    }
 
     if ($link) {
         $resp_body->{target_url} = $link;
