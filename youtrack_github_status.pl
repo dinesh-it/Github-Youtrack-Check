@@ -233,7 +233,7 @@ sub check_all_commits {
             next;
         }
         elsif ($ticket_url eq 'WAIT') {
-            github_status($commit, 'pending', $ticket_url, $yt_id);
+            github_status($commit, 'pending', undef, $yt_id);
 
             # YouTrack not available or network issue, sleep and try again later
             return;
