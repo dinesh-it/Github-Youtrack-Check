@@ -146,17 +146,22 @@ sub github_status {
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");
 
+    my $status_icon = ':white_check_mark: ';
     my $desc = 'Commit message mentions a valid Youtrack ticket';
     if ($status eq 'error') {
         $desc = 'No valid YouTrack ticket - Commit message does not mention a valid Youtrack ticket';
+        $status_icon = ':x: ';
     }
     elsif ($status eq 'pending') {
         $desc = "Waiting for youtrack - Commit message mentions a ticket";
+        $status_icon = ':warning: ';
     }
 
     if ($yt_id) {
         $desc = $yt_id . ' - ' . $desc;
     }
+
+    $desc = $status_icon . $desc;
 
     my $resp_body = {
         "context"     => "ci/chk-youtrack",
