@@ -1,3 +1,4 @@
+Crypt::Lite
 DBI
 DBD::SQLite
 Digest::SHA
@@ -5,5 +6,6 @@ IO::Socket::SSL
 JSON::XS
 LWP::UserAgent
 LWP::Protocol::https
+Mojo::IOLoop::EventEmitter
 Mojolicious::Lite
 URI::Builder

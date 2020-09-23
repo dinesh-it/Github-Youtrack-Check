@@ -2,9 +2,13 @@
 
 use Mojolicious::Lite;
 use Digest::SHA qw(hmac_sha1_hex);
+use Mojo::IOLoop::EventEmitter;
+use Crypt::Lite;
 use DBI;
 
 $| = 1;
+my $push_emitter = Mojo::IOLoop::EventEmitter->new;
+my $crypt        = Crypt::Lite->new(debug => 0, encoding => 'hex8');
 
 post '/check_youtrack' => sub {
     my ($c) = @_;
@@ -42,6 +46,16 @@ post '/check_youtrack' => sub {
         foreach my $commit (@{$commits}) {
             add_commit($repo_name, $owner, $commit);
         }
+
+        # Store this state and publish push event on socket
+        my $data = {
+            project          => $repo->{name},
+            ref              => $params->{ref},
+            latest_commit_id => $params->{after},
+            last_updated     => $repo->{pushed_at},
+            remote_url       => $repo->{ssh_url},
+        };
+        $push_emitter->emit($req_event_type => update_repo_state($data));
     }
     else {
         # Store pull request details
@@ -58,6 +72,72 @@ post '/check_youtrack' => sub {
 
     return $c->rendered(200);
 };
+
+# ============================================================================ #
+
+websocket '/githubpush' => sub {
+    my ($c) = shift;
+    Mojo::IOLoop->stream($c->tx->connection)->timeout(0);
+
+    # Subscribe to events
+    my $cb_push = $push_emitter->on(
+        push => sub {
+            my ($pm, $s) = @_;
+            send_stat($s, $c);
+        }
+    );
+
+    my $cb_error = $push_emitter->on(
+        error => sub {
+            my ($pm, $error) = @_;
+            print STDERR "ERROR: $error\n";
+        }
+    );
+
+    $c->on(
+        message => sub {
+            my ($ws, $msg) = @_;
+            my $ip = $ws->tx->remote_address;
+            if ($msg eq 'give-latest') {
+                $c->log->info("Received $msg from $ip");
+                my $stats = get_all_repo_state();
+                foreach my $s (@{$stats}) {
+                    send_stat($s, $c);
+                }
+            }
+            else {
+                $c->log->error("Un-recognised message received: $msg from $ip");
+            }
+        }
+    );
+
+    $c->on(
+        finish => sub {
+            my ($ws, $code, $reason) = @_;
+            my $ip  = $ws->tx->remote_address;
+            my $msg = "websocket connection closed from $ip ,Code: $code";
+            $msg .= ' Reason: $reason' if ($reason);
+            $push_emitter->unsubscribe('push'  => $cb_push);
+            $push_emitter->unsubscribe('error' => $cb_error);
+            $c->log->info($msg);
+        }
+    );
+};
+
+# ============================================================================ #
+
+# Send the stat in websocket
+sub send_stat {
+    my ($s, $c) = @_;
+    my $ev_str =
+      "$s->{project}|$s->{ref}|$s->{latest_commit_id}|$s->{last_updated}|$s->{remote_url}|$s->{updated_epoch}";
+    if ($ENV{GH_WEBSOCKET_SECRET}) {
+        $c->log->debug("Encrypting: $ev_str");
+        $ev_str = $crypt->encrypt($ev_str, $ENV{GH_WEBSOCKET_SECRET});
+    }
+    $c->log->info("Sending: $ev_str");
+    $c->send("$ev_str");
+}
 
 # ============================================================================ #
 
@@ -94,6 +174,55 @@ sub get_db_conn {
 
 # ============================================================================ #
 
+sub get_all_repo_state {
+    my $dbh    = get_db_conn();
+    my $select = qq/SELECT * FROM GitRepoState/;
+    my $result = $dbh->selectall_arrayref($select, {Slice => {}});
+
+    if (!$result or !@{$result}) {
+        return [];
+    }
+
+    return $result;
+}
+
+# ============================================================================ #
+
+sub update_repo_state {
+    my ($data) = @_;
+
+    my $dbh = get_db_conn();
+
+    my ($project, $ref, $last_commit, $last_update, $remote_url) =
+      ($data->{project}, $data->{ref}, $data->{latest_commit_id}, $data->{last_updated}, $data->{remote_url});
+
+    my $now = time;
+
+    my $select = qq/SELECT * FROM GitRepoState WHERE project = ? AND ref = ?/;
+    my $result = $dbh->selectall_arrayref($select, {Slice => {}}, $project, $ref);
+
+    my $sql;
+    if (!$result or !@{$result}) {
+        $sql =
+qq/INSERT INTO GitRepoState (project, ref, latest_commit_id, last_updated, remote_url, updated_epoch) VALUES(?,?,?,?,?,?)/;
+        my $sth = $dbh->prepare($sql);
+        $sth->execute($project, $ref, $last_commit, $last_update, $remote_url, $now)
+          or print STDERR "Failed to insert GitRepoState record:" . $dbh->errstr;
+    }
+    else {
+        $sql =
+qq/UPDATE GitRepoState SET latest_commit_id = ?, last_updated = ?, remote_url = ?, updated_epoch = ? WHERE project = ? AND ref = ?/;
+        my $sth = $dbh->prepare($sql);
+        $sth->execute($last_commit, $last_update, $remote_url, $now, $project, $ref)
+          or print STDERR "Failed to update GitRepoState record:" . $dbh->errstr;
+    }
+
+    $data->{updated_epoch} = $now;
+    return $data;
+}
+
+# ============================================================================ #
+
 sub create_table_if_not_exist {
     my $dbh  = shift;
     my $stmt = qq/CREATE TABLE IF NOT EXISTS GitPushEvent (
@@ -109,7 +238,22 @@ sub create_table_if_not_exist {
     if ($rv < 0) {
         die $DBI::errstr;
     }
+
+    $stmt = qq/CREATE TABLE IF NOT EXISTS GitRepoState (
+    project TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    latest_commit_id TEXT NOT NULL,
+    last_updated INTEGER NOT NULL,
+    remote_url TEXT NOT NULL,
+    updated_epoch INTEGER NOT NULL
+    )/;
+
+    $rv = $dbh->do($stmt);
+    if ($rv < 0) {
+        die $DBI::errstr;
+    }
 }
+
 create_table_if_not_exist(get_db_conn());
 
 # ============================================================================ #
