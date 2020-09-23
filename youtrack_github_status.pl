@@ -102,9 +102,10 @@ sub get_youtrack_ticket {
     if (!$ticket->is_success) {
         my $status_code = $ticket->code;
         print STDERR "YouTrack request Error: $status_code :" . $ticket->status_line . "\n";
+        print STDERR "Failed URL: $url\n";
         die "Please check the token\n" if ($status_code == 401);
 
-        if ($status_code == 408 || $status_code == 503 || $ticket->status_line =~ /Can't connect to/i) {
+        if ($status_code == 408 || $status_code == 503 || $ticket->status_line =~ /Can't connect to/i || $ticket->status_line =~ /Time-out/i) {
 
             my $retry_after = $ticket->header("Retry-After");
             if ($retry_after) {
