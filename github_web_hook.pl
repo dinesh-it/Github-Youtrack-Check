@@ -28,7 +28,7 @@ post '/check_youtrack' => sub {
     if (!$req_event_type) {
         return $c->rendered(400);
     }
-    elsif ($req_event_type ne 'push' && $req_event_type ne 'pull_request') {
+    elsif ($req_event_type !~ /^(push|pull_request|ping)$/) {
         $c->app->log->warn(
             "Consider disabling web hook for event type $req_event_type, only push/pull_request type is required");
         return $c->rendered(200);
@@ -38,7 +38,10 @@ post '/check_youtrack' => sub {
     my $repo      = $params->{repository};
     my $repo_name = $repo->{name};
 
-    if ($req_event_type eq 'push') {
+    if ($req_event_type eq 'ping') {
+        $c->render(json => { status => 'ok', project => $repo_name, msg => 'Configuration Success!' });
+    }
+    elsif ($req_event_type eq 'push') {
 
         # Store commit details
         my $owner   = $repo->{owner}->{name};
@@ -56,18 +59,21 @@ post '/check_youtrack' => sub {
             remote_url       => $repo->{ssh_url},
         };
         $push_emitter->emit($req_event_type => update_repo_state($data));
+        $c->render(json => { project => $repo->{name}, ref => $params->{ref}, status => 'ok', msg => 'Commit added for check'});
     }
     else {
         # Store pull request details
         my $pr_action = $params->{action};
 
         if ($pr_action !~ /^(opened|reopened|synchronize)$/) {
+            $c->render(json => { project => $repo_name, status => 'ignored', action => $pr_action, msg => "Pull request ignored for action $pr_action" });
             return $c->rendered(200);
         }
 
         my $commits_url  = $params->{pull_request}->{commits_url};
         my $after_commit = $params->{after};
         add_pull_request($repo_name, $commits_url, $after_commit);
+        $c->render(json => { project => $repo_name, status => 'ok', msg => 'Pull request commits added for check', ref => $params->{ref} });
     }
 
     return $c->rendered(200);
