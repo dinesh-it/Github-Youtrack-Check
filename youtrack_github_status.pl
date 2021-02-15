@@ -105,6 +105,10 @@ sub get_youtrack_ticket {
         print STDERR "Failed URL: $url\n";
         die "Please check the token\n" if ($status_code == 401);
 
+        if($status_code == 502) {
+            die "Received 502, lets die and see if it works after the service restart\n";
+        }
+
         if ($status_code == 408 || $status_code == 503 || $ticket->status_line =~ /Can't connect to/i || $ticket->status_line =~ /Time-out/i) {
 
             my $retry_after = $ticket->header("Retry-After");
