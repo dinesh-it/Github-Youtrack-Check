@@ -71,8 +71,11 @@ post '/check_youtrack' => sub {
         }
 
         my $commits_url  = $params->{pull_request}->{commits_url};
+        my $pr_url       = $params->{pull_request}->{html_url};
+        my $pr_title     = $params->{pull_request}->{title};
         my $after_commit = $params->{after};
-        add_pull_request($repo_name, $commits_url, $after_commit);
+        add_pull_request($repo_name, $commits_url, $after_commit, $pr_url);
+        add_commit($repo_name, 'NONE', { message => $pr_title, id => 'NONE' }, $pr_url);
         $c->render(json => { project => $repo_name, status => 'ok', msg => 'Pull request commits added for check', ref => $params->{ref} });
     }
 
@@ -148,22 +151,22 @@ sub send_stat {
 # ============================================================================ #
 
 sub add_commit {
-    my ($repo_name, $owner, $commit) = @_;
+    my ($repo_name, $owner, $commit, $pr_url) = @_;
     my $dbh = get_db_conn();
     my $sql =
-      qq/INSERT INTO GitPushEvent (event_type, project, owner, commit_id, message, created_epoch) VALUES(?,?,?,?,?,?)/;
+      qq/INSERT INTO GitPushEvent (event_type, project, owner, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?,?)/;
     my $sth = $dbh->prepare($sql);
-    return $sth->execute('push', $repo_name, $owner, $commit->{id}, $commit->{message}, time);
+    return $sth->execute('push', $repo_name, $owner, $commit->{id}, $commit->{message}, $pr_url, time);
 }
 
 # ============================================================================ #
 
 sub add_pull_request {
-    my ($repo_name, $commits_url, $after_commit) = @_;
+    my ($repo_name, $commits_url, $after_commit, $pr_url) = @_;
     my $dbh = get_db_conn();
-    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, created_epoch) VALUES(?,?,?,?,?)/;
+    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?)/;
     my $sth = $dbh->prepare($sql);
-    return $sth->execute('pull_request', $repo_name, $after_commit, $commits_url, time);
+    return $sth->execute('pull_request', $repo_name, $after_commit, $commits_url, $pr_url, time);
 }
 
 # ============================================================================ #
@@ -237,6 +240,7 @@ sub create_table_if_not_exist {
     owner TEXT NULL,
     commit_id TEXT NULL,
     message TEXT NOT NULL,
+    git_link TEXT NULL,
     created_epoch INTEGER NOT NULL
     )/;
 

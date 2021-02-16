@@ -25,7 +25,7 @@ die "Something went wrong!\n" if(!$all_open_prs);
 
 foreach my $pr (@{$all_open_prs}) {
     print "Adding pull request:" . $pr->{url} . "\n";
-    add_pull_request($project, $pr->{commits_url});
+    add_pull_request($project, $pr->{commits_url}, $pr->{html_url});
 }
 
 # ============================================================================ #
@@ -83,11 +83,11 @@ sub fetch_all_open_pulls {
 # ============================================================================ #
 
 sub add_pull_request {
-    my ($repo_name, $commits_url, $after_commit) = @_;
+    my ($repo_name, $commits_url, $pr_link) = @_;
     my $dbh = get_db_conn();
-    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, created_epoch) VALUES(?,?,?,?,?)/;
+    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?)/;
     my $sth = $dbh->prepare($sql);
-    return $sth->execute('pull_request', $repo_name, $after_commit, $commits_url, time);
+    return $sth->execute('pull_request', $repo_name, undef, $commits_url, $pr_link, time);
 }
 
 # ============================================================================ #

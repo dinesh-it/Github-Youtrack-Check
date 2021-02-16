@@ -19,6 +19,7 @@ foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST GITHUB_TOKEN
 }
 
 my $verified_tickets = {};
+my $comments_added   = {};
 my $sleep_time       = 5;
 
 while (1) {
@@ -55,6 +56,15 @@ sub delete_commit {
     my $dbh       = get_db_conn();
     my $sql       = qq/DELETE FROM GitPushEvent WHERE commit_id = ?/;
     $dbh->do($sql, undef, $commit_id);
+}
+
+# ============================================================================ #
+
+sub delete_pr_title {
+    my $pr_link   = shift;
+    my $dbh       = get_db_conn();
+    my $sql       = qq/DELETE FROM GitPushEvent WHERE commit_id = 'NONE' AND git_link = ?/;
+    $dbh->do($sql, undef, $pr_link);
 }
 
 # ============================================================================ #
@@ -146,6 +156,8 @@ sub get_youtrack_ticket {
 sub github_status {
     my ($commit, $status, $link, $yt_id) = @_;
 
+    my $commit_hash = $commit->{commit_id};
+	return if($commit_hash eq 'NONE');
     my $gh_token = $ENV{GITHUB_TOKEN};
 
     my $ua = LWP::UserAgent->new();
@@ -178,7 +190,6 @@ sub github_status {
         $resp_body->{target_url} = $link;
     }
 
-    my $commit_hash = $commit->{commit_id};
     my $gh_owner    = $commit->{owner};
     my $gh_repo     = $commit->{project};
 
@@ -225,9 +236,11 @@ sub check_all_commits {
 
     foreach my $commit (@{$commits}) {
         my $yt_id = get_youtrack_id($commit->{message});
+        my $pr_link = $commit->{git_link};
         if (!$yt_id) {
             print STDERR "Message: \"$commit->{message}\" does not have a matching youtrack Id\n";
             github_status($commit, 'error');
+            delete_pr_title($pr_link) if($commit->{commit_id} eq 'NONE');
             next;
         }
         my $ticket_url = get_youtrack_ticket($yt_id);
@@ -235,6 +248,7 @@ sub check_all_commits {
         if (!$ticket_url) {
             print STDERR "Valid YouTrack ticket not found with Id: $yt_id\n";
             github_status($commit, 'error');
+            delete_pr_title($pr_link) if($commit->{commit_id} eq 'NONE');
             next;
         }
         elsif ($ticket_url eq 'WAIT') {
@@ -245,10 +259,121 @@ sub check_all_commits {
         }
         else {
             github_status($commit, 'success', $ticket_url, $yt_id);
+            add_yt_comment($yt_id, $pr_link);
         }
     }
 
     $sleep_time = 0;
+}
+
+# ============================================================================ #
+
+sub add_yt_comment {
+    my ($ticket_id, $pr_link) = @_;
+
+    return if(!$pr_link);
+
+    return if($comments_added->{"$ticket_id-$pr_link"});
+
+    my $yt_token = $ENV{YOUTRACK_TOKEN};
+    my $yt_host  = $ENV{YOUTRACK_HOST};
+
+    my $yt = URI::Builder->new(uri => $yt_host);
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer $yt_token");
+    $ua->default_header('Accept'        => 'application/json');
+    $ua->default_header('Content-Type'  => 'application/json');
+
+    my $ticket_fields = 'fields=id,author,text';
+
+    my $comments = get_yt_comments($ticket_id);
+    my @ci_comments;
+
+    foreach my $c (@{$comments}) {
+        next if($c->{deleted});
+
+        if($c->{author}->{login} eq 'ci') {
+            push (@ci_comments, $c);
+        }
+        elsif($c->{text} =~ /$pr_link/g) {
+            #print "PR mentioned by user on $ticket_id\n";
+            $comments_added->{"$ticket_id-$pr_link"} = 1;
+            delete_pr_title($pr_link);
+            return;
+        }
+    }
+    
+    my $comment = $ci_comments[-1];
+    my $comment_text = 'Pull Request(s) - Github commit mentions';
+    my @path_seg = ("youtrack", "api", "issues", $ticket_id, "comments");
+    my $comment_id;
+    my $update_required = 1;
+    if ($comment && $comment->{id}) {
+        $comment_id = $comment->{id};
+        $comment_text = $comment->{text};
+        $update_required = 0 if($comment_text =~ /$pr_link/g);
+        push(@path_seg, $comment_id);
+    }
+
+    if(!$update_required) {
+        #print "PR already mentioned on $ticket_id\n";
+        $comments_added->{"$ticket_id-$pr_link"} = 1;
+        delete_pr_title($pr_link);
+        return;
+    }
+    
+    $comment_text .= "\n$pr_link";
+
+    $yt->path_segments(@path_seg);
+
+    my $url = $yt->as_string . "?$ticket_fields";
+
+    my $body = {
+        "text" => $comment_text
+    };
+
+    my $ticket = $ua->post($url, fields => 'id,author,text', Content => encode_json($body) );
+
+    if (!$ticket->is_success) {
+        print "Failed! " . $ticket->status_line  . "\n";
+    }
+    else {
+        #print "Youtrack comment added/updated successfully on ticket $ticket_id\n";
+        $comments_added->{"$ticket_id-$pr_link"} = 1;
+        delete_pr_title($pr_link);
+    }
+}
+
+# ============================================================================ #
+
+sub get_yt_comments {
+    my $ticket_id = shift;
+
+    my $yt_token = $ENV{YOUTRACK_TOKEN};
+    my $yt_host  = $ENV{YOUTRACK_HOST};
+
+    my $yt = URI::Builder->new(uri => $yt_host);
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer $yt_token");
+    $ua->default_header('Accept'        => 'application/json');
+    $ua->default_header('Content-Type'  => 'application/json');
+
+    my $ticket_fields = 'fields=id,author(login),text,deleted';
+
+    $yt->path_segments("youtrack", "api", "issues", $ticket_id, "comments");
+
+    my $url = $yt->as_string . "?$ticket_fields";
+    
+    my $ticket = $ua->get($url);
+
+    if (!$ticket->is_success) {
+        print "Failed! " . $ticket->status_line  . "\n";
+        return;
+    }
+    
+    return decode_json($ticket->decoded_content);
 }
 
 # ============================================================================ #

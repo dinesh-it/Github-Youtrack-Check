@@ -23,9 +23,10 @@ print "Added project: $project with commits URL: $c_url\n";
 sub add_pull_request {
     my ($repo_name, $commits_url, $after_commit) = @_;
     my $dbh = get_db_conn();
-    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, created_epoch) VALUES(?,?,?,?,?)/;
+    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?)/;
     my $sth = $dbh->prepare($sql);
-    return $sth->execute('pull_request', $repo_name, $after_commit, $commits_url, time);
+    my $pr_link = "https://github.com/$owner/$project/pull/$pr_num";
+    return $sth->execute('pull_request', $repo_name, $after_commit, $commits_url, $pr_link, time);
 }
 
 # ============================================================================ #

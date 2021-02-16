@@ -51,6 +51,7 @@ sub check_all_pull_requests {
     foreach my $pr (@{$result}) {
         my $commits_url = $pr->{message};
         my $project     = $pr->{project};
+        my $pr_link     = $pr->{git_link};
 
         my @url = split('/', $commits_url);
 
@@ -81,7 +82,7 @@ sub check_all_pull_requests {
 
         my $table_data = get_commits_data($commits);
 
-        if (add_commits($table_data, $project, $owner)) {
+        if (add_commits($table_data, $project, $owner, $pr_link)) {
             delete_pull_request($project, $commits_url);
         }
     }
@@ -101,15 +102,15 @@ sub delete_pull_request {
 # ============================================================================ #
 
 sub add_commits {
-    my ($data, $project, $owner) = @_;
+    my ($data, $project, $owner, $pr_link) = @_;
     my $dbh = get_db_conn();
     my $sql =
-      qq/INSERT INTO GitPushEvent (event_type, project, owner, commit_id, message, created_epoch) VALUES(?,?,?,?,?,?)/;
+      qq/INSERT INTO GitPushEvent (event_type, project, owner, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?,?)/;
     my $sth   = $dbh->prepare($sql);
     my $count = 0;
 
     foreach my $commit (@{$data}) {
-        $count += $sth->execute('push', $project, $owner, $commit->{id}, $commit->{message}, time);
+        $count += $sth->execute('push', $project, $owner, $commit->{id}, $commit->{message}, $pr_link, time);
     }
 
     if ($count != @{$data}) {
