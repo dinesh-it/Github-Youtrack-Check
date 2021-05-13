@@ -2,12 +2,17 @@
 
 use Mojolicious::Lite;
 use Digest::SHA qw(hmac_sha1_hex);
-use Mojo::IOLoop::EventEmitter;
+use Mojo::EventEmitter;
 use Crypt::Lite;
 use DBI;
 
+use FindBin;
+use lib $FindBin::Bin;
+use GithubToken;
+
+
 $| = 1;
-my $push_emitter = Mojo::IOLoop::EventEmitter->new;
+my $push_emitter = Mojo::EventEmitter->new;
 my $crypt        = Crypt::Lite->new(debug => 0, encoding => 'hex8');
 
 post '/check_youtrack' => sub {
@@ -19,7 +24,7 @@ post '/check_youtrack' => sub {
         my $hmac     = 'sha1=' . hmac_sha1_hex($c->req->body, $ENV{GITHUB_SECRET});
         if ($req_hmac ne $hmac) {
             $c->app->log->error("HMAC compare failed, sent 400", $req_hmac, $hmac);
-            return $c->rendered(400);
+            #return $c->rendered(400);
         }
     }
 
@@ -28,13 +33,37 @@ post '/check_youtrack' => sub {
     if (!$req_event_type) {
         return $c->rendered(400);
     }
-    elsif ($req_event_type !~ /^(push|pull_request|ping)$/) {
+    elsif ($req_event_type !~ /^(push|pull_request|ping|installation)$/) {
         $c->app->log->warn(
             "Consider disabling web hook for event type $req_event_type, only push/pull_request type is required");
         return $c->rendered(200);
     }
 
-    my $params    = $c->req->json;
+    my $params = $c->req->json;
+
+    # Github app installation/update
+    if($req_event_type eq 'installation') {
+
+        if(!$ENV{GITHUB_APP_KEY_FILE}) {
+            $c->app->log->error("Please set GITHUB_APP_KEY_FILE env");
+            return $c->rendered(500);
+        }
+
+        my $app_id = $params->{installation}->{app_id};
+        my $at_url = $params->{installation}->{access_tokens_url};
+
+        my $gt = GithubToken->new(
+            private_key_file => $ENV{GITHUB_APP_KEY_FILE},
+            github_app_id => $app_id,
+            access_token_url => $at_url,
+            force_update => 1,
+        );
+        return $c->rendered(200) if($gt->get_access_token);
+
+        $c->app->log->error("Failed to create/refresh access_token");
+        return $c->rendered(500);
+    }
+
     my $repo      = $params->{repository};
     my $repo_name = $repo->{name};
 

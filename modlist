@@ -6,6 +6,6 @@ IO::Socket::SSL
 JSON::XS
 LWP::UserAgent
 LWP::Protocol::https
-Mojo::IOLoop::EventEmitter
 Mojolicious::Lite
+Mojo::EventEmitter
 URI::Builder
