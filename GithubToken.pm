@@ -13,7 +13,7 @@ use Fcntl qw(:flock);
 
 has 'private_key_file' => ( is => 'ro', required => 1 );
 has 'private_key' => (is => 'rw');
-has 'github_app_id' => ( is => 'ro', required => 1 );
+has 'github_app_id' => ( is => 'rw' );
 has 'token_file' => ( is => 'rw');
 has 'access_token_url' => ( is => 'rw' );
 has 'access_token' => ( is => 'rw' );
@@ -43,8 +43,8 @@ sub get_access_token {
 
     my $get_token_url = $self->access_token_url;
 
-    if(!$get_token_url) {
-        die "No access_token_url to fetch access_token\n";
+    if(!$get_token_url and !$self->github_app_id) {
+        die "No access_token_url or github_app_id to fetch access_token\n";
     }
 
     my $ua = LWP::UserAgent->new();
@@ -111,8 +111,9 @@ sub read_file {
     my @data = split(',', $data);
     $self->access_token_url($data[0]);
     $self->access_token($data[1]);
-    chomp($data[2]);
-    $self->expire_epoch($data[2]);
+    $self->github_app_id($data[2]);
+    chomp($data[3]);
+    $self->expire_epoch($data[3]);
 }
 
 sub write_file {
@@ -122,7 +123,7 @@ sub write_file {
     open(my $fh, ">", $self->token_file) or die "Can't open token file: $!";
 
     flock($fh, LOCK_EX) or die "Cannot lock file - $!\n";
-    print $fh $self->access_token_url . ',' . $self->access_token . ',' . $self->expire_epoch . "\n";
+    print $fh $self->access_token_url . ',' . $self->access_token . ',' . $self->github_app_id . ',' . $self->expire_epoch . "\n";
     flock($fh, LOCK_UN) or die "Cannot unlock file - $!\n";
 }
 
