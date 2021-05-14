@@ -7,12 +7,28 @@ use LWP::UserAgent;
 use URI::Builder;
 use JSON::XS;
 
+use FindBin;
+use lib $FindBin::Bin;
+use GithubToken;
+
 # To make sure we get systemd logs immediately
 $| = 1;
 
 # Check of required ENV's available
-if (!$ENV{GITHUB_TOKEN}) {
-    die "GITHUB_TOKEN ENV required\n";
+if (!$ENV{GITHUB_TOKEN} and !$ENV{GITHUB_APP_KEY_FILE}) {
+    die "GITHUB_TOKEN or GITHUB_APP_KEY_FILE ENV required\n";
+}
+
+my $gt;
+if($ENV{GITHUB_APP_KEY_FILE}) {
+    $gt = GithubToken->new(
+        private_key_file => $ENV{GITHUB_APP_KEY_FILE},
+    );
+
+    if(!$gt->get_access_token) {
+        die "Failed to get github app access token\n";
+    }
+    print "Using github app access token for github API\n";
 }
 
 my $sleep_time = 0;
@@ -125,7 +141,7 @@ sub add_commits {
 sub fetch_all_commits {
     my ($page_url, $no_delete) = @_;
 
-    my $gh_token = $ENV{GITHUB_TOKEN};
+    my $gh_token = $gt ? $gt->get_access_token : $ENV{GITHUB_TOKEN};
 
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");

@@ -7,9 +7,25 @@ use LWP::UserAgent;
 use URI::Builder;
 use JSON::XS;
 
+use FindBin;
+use lib $FindBin::Bin;
+use GithubToken;
+
 # Check of required ENV's available
 if (!$ENV{GITHUB_TOKEN}) {
     die "GITHUB_TOKEN ENV required\n";
+}
+
+my $gt;
+if($ENV{GITHUB_APP_KEY_FILE}) {
+    $gt = GithubToken->new(
+        private_key_file => $ENV{GITHUB_APP_KEY_FILE},
+    );
+
+    if(!$gt->get_access_token) {
+        die "Failed to get github app access token\n";
+    }
+    print "Using github app access token for github API\n";
 }
 
 my $owner   = $ARGV[0];
@@ -33,7 +49,7 @@ foreach my $pr (@{$all_open_prs}) {
 sub fetch_all_open_pulls {
     my ($owner, $repo) = @_;
 
-    my $gh_token = $ENV{GITHUB_TOKEN};
+    my $gh_token = $gt ? $gt->get_access_token : $ENV{GITHUB_TOKEN};
 
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");

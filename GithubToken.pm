@@ -14,7 +14,7 @@ use Fcntl qw(:flock);
 has 'private_key_file' => ( is => 'ro', required => 1 );
 has 'private_key' => (is => 'rw');
 has 'github_app_id' => ( is => 'rw' );
-has 'token_file' => ( is => 'rw');
+has 'token_file' => ( is => 'rw', default => './github_app_access.token' );
 has 'access_token_url' => ( is => 'rw' );
 has 'access_token' => ( is => 'rw' );
 has 'expire_epoch' => ( is => 'rw' );
@@ -23,8 +23,6 @@ has 'token_last_modified' => ( is => 'rw' );
 
 sub get_access_token {
     my $self = shift;
-
-    $self->token_file('./gha_' . $self->github_app_id . '.token');
 
     $self->access_token_url('https://api.github.com/app/installations/16753352/access_tokens');
 
