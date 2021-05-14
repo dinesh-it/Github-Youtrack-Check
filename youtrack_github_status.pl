@@ -7,6 +7,11 @@ use LWP::UserAgent;
 use URI::Builder;
 use JSON::XS;
 use HTTP::Date;
+use DateTime;
+
+use FindBin;
+use lib $FindBin::Bin;
+use GithubToken;
 
 # To make sure we get systemd logs immediately
 $| = 1;
@@ -16,6 +21,18 @@ foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST GITHUB_TOKEN
     if (!$ENV{$var}) {
         die "$var ENV required\n";
     }
+}
+
+my $gt;
+if($ENV{GITHUB_APP_KEY_FILE}) {
+    $gt = GithubToken->new(
+        private_key_file => $ENV{GITHUB_APP_KEY_FILE},
+    );
+
+    if(!$gt->get_access_token) {
+        die "Failed to get github app access token\n";
+    }
+    print "Using github app, so will posting github checks instead of status\n";
 }
 
 my $verified_tickets = {};
@@ -88,7 +105,7 @@ sub get_youtrack_ticket {
     return if (!$ticket_id);
 
     if (exists $verified_tickets->{$ticket_id}) {
-        return $verified_tickets->{$ticket_id};
+        return $verified_tickets->{$ticket_id}->{Link};
     }
 
     my $yt_token = $ENV{YOUTRACK_TOKEN};
@@ -101,7 +118,7 @@ sub get_youtrack_ticket {
     $ua->default_header('Accept'        => 'application/json');
     $ua->default_header('Content-Type'  => 'application/json');
 
-    my $ticket_fields = 'fields=numberInProject,project(shortName)';
+    my $ticket_fields = 'fields=numberInProject,project(shortName),summary,description';
 
     $yt->path_segments("youtrack", "api", "issues", $ticket_id);
 
@@ -146,9 +163,10 @@ sub get_youtrack_ticket {
     }
 
     $yt->path_segments('youtrack', 'issue', $ticket_id);
-    $verified_tickets->{$ticket_id} = $yt->as_string;
+    $verified_tickets->{$ticket_id} = decode_json($ticket->decoded_content);
+    $verified_tickets->{$ticket_id}->{Link} = $yt->as_string;
 
-    return $yt->as_string;
+    return $verified_tickets->{$ticket_id}->{Link};
 }
 
 # ============================================================================ #
@@ -157,7 +175,13 @@ sub github_status {
     my ($commit, $status, $link, $yt_id) = @_;
 
     my $commit_hash = $commit->{commit_id};
-	return if($commit_hash eq 'NONE');
+    return if($commit_hash eq 'NONE');
+
+    if($gt) {
+        github_check(@_);
+        return;
+    }
+
     my $gh_token = $ENV{GITHUB_TOKEN};
 
     my $ua = LWP::UserAgent->new();
@@ -236,6 +260,7 @@ sub check_all_commits {
 
     foreach my $commit (@{$commits}) {
         my $yt_id = get_youtrack_id($commit->{message});
+
         my $pr_link = $commit->{git_link};
         if (!$yt_id) {
             print STDERR "Message: \"$commit->{message}\" does not have a matching youtrack Id\n";
@@ -243,6 +268,8 @@ sub check_all_commits {
             delete_pr_title($pr_link) if($commit->{commit_id} eq 'NONE');
             next;
         }
+
+        github_status($commit, 'pending', undef, $yt_id);
         my $ticket_url = get_youtrack_ticket($yt_id);
 
         if (!$ticket_url) {
@@ -374,6 +401,85 @@ sub get_yt_comments {
     }
     
     return decode_json($ticket->decoded_content);
+}
+
+# ============================================================================ #
+
+sub github_check {
+    my ($commit, $result, $link, $yt_id) = @_;
+
+    my $gh_token = $gt->get_access_token;
+
+    my ($title, $desc);
+    if($yt_id and $verified_tickets->{$yt_id}) {
+        $title = "$yt_id: $verified_tickets->{$yt_id}->{summary}";
+        $desc = "$verified_tickets->{$yt_id}->{description}";
+    }
+
+    $title = "Valid ticket found" if(!$title);
+    $desc = 'Commit message mentions a valid Youtrack ticket' if(!$desc);
+
+    my $status = 'completed';
+    my $conclusion = 'success';
+
+    if ($result eq 'error') {
+        $title = 'No ticket found';
+        $desc = 'No valid YouTrack ticket - Commit message does not mention a valid Youtrack ticket';
+        $conclusion = 'failure';
+    }
+    elsif ($result eq 'pending') {
+        $title = "Pending Youtrack check for $yt_id";
+        $desc = "$yt_id: Waiting for youtrack - Commit message mentions a ticket";
+        $status = 'in_progress';
+        $conclusion = 'neutral';
+    }
+
+    my $commit_hash = $commit->{commit_id};
+    my $gh_owner    = $commit->{owner};
+    my $gh_repo     = $commit->{project};
+
+    my $body = {
+        name => 'ci/chk-youtrack',
+        head_sha => $commit_hash,
+        status => $status,
+        conclusion => $conclusion,
+        output => {
+            title => $title,
+            summary => $desc,
+        },
+    };
+
+    $body->{details_url} = $link if($link);
+
+    $body->{started_at} = DateTime->now . 'Z' if($status eq 'in_progress');
+    $body->{completed_at} = DateTime->now . 'Z' if($status eq 'completed');
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer $gh_token");
+    $ua->default_header('Content-Type' => 'application/json');
+
+    # https://api.github.com/repos/dinesh-it/APIAutomation/check-runs
+    my $gh = URI::Builder->new(uri => 'https://api.github.com');
+    $gh->path_segments("repos", $gh_owner, $gh_repo, "check-runs");
+    my $gh_url = $gh->as_string;
+
+    my $json_body = encode_json($body);
+    my $res = $ua->post($gh_url, Content => $json_body);
+    my $res_code = $res->code;
+
+    if ($res->is_success) {
+        delete_commit($commit_hash) if ($result ne 'pending');
+    }
+    else {
+        print STDERR "Error updating status for: $gh_url\n";
+        print STDERR $res->decoded_content . "\n";
+
+        # Re-try only if the request timed out or internet issue
+        if ($res_code != 408 and $res->status_line !~ /Can't connect to/i) {
+            delete_commit($commit_hash);
+            print "This check update will not be re-tried\n";
+        }
+    }
 }
 
 # ============================================================================ #
