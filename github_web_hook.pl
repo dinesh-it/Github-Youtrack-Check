@@ -24,7 +24,7 @@ post '/check_youtrack' => sub {
         my $hmac     = 'sha1=' . hmac_sha1_hex($c->req->body, $ENV{GITHUB_SECRET});
         if ($req_hmac ne $hmac) {
             $c->app->log->error("HMAC compare failed, sent 400", $req_hmac, $hmac);
-            #return $c->rendered(400);
+            return $c->rendered(400);
         }
     }
 
@@ -33,7 +33,7 @@ post '/check_youtrack' => sub {
     if (!$req_event_type) {
         return $c->rendered(400);
     }
-    elsif ($req_event_type !~ /^(push|pull_request|ping|installation)$/) {
+    elsif ($req_event_type !~ /^(push|pull_request|ping|installation|check_run)$/) {
         $c->app->log->warn(
             "Consider disabling web hook for event type $req_event_type, only push/pull_request type is required");
         return $c->rendered(200);
@@ -94,18 +94,38 @@ post '/check_youtrack' => sub {
         # Store pull request details
         my $pr_action = $params->{action};
 
-        if ($pr_action !~ /^(opened|reopened|synchronize)$/) {
+        if ($pr_action !~ /^(opened|reopened|synchronize|rerequested|edited)$/) {
             $c->render(json => { project => $repo_name, status => 'ignored', action => $pr_action, msg => "Pull request ignored for action $pr_action" });
             return $c->rendered(200);
+        }
+
+        # Hack to add back the PR for check again when user click re-run on the check result
+        if($pr_action eq 'rerequested') {
+
+            my $owner = $repo->{owner}->{name} || $repo->{owner}->{login};
+            my $pr_num = $params->{check_run}->{check_suite}->{pull_requests}->[0]->{number};
+
+            $params->{pull_request}->{commits_url} = "https://api.github.com/repos/$owner/$repo_name/pulls/$pr_num/commits";
+            $params->{pull_request}->{html_url} = $params->{check_run}->{check_suite}->{pull_requests}->[0]->{url};
+
+            $params->{after} = $params->{check_run}->{check_suite}->{after};
+            $params->{pull_request}->{head}->{sha} = $params->{check_run}->{head_sha};
         }
 
         my $commits_url  = $params->{pull_request}->{commits_url};
         my $pr_url       = $params->{pull_request}->{html_url};
         my $pr_title     = $params->{pull_request}->{title};
+        my $head_commit  = $params->{pull_request}->{head}->{sha};
         my $after_commit = $params->{after};
         add_pull_request($repo_name, $commits_url, $after_commit, $pr_url);
-        add_commit($repo_name, 'NONE', { message => $pr_title, id => 'NONE' }, $pr_url);
-        $c->render(json => { project => $repo_name, status => 'ok', msg => 'Pull request commits added for check', ref => $params->{ref} });
+
+        if($pr_title) {
+            my $owner = $repo->{owner}->{name} || $repo->{owner}->{login};
+            my $base_ref = $params->{pull_request}->{base}->{ref};
+            add_commit($repo_name, $owner, { message => $pr_title, id => "PRT|$base_ref|" . $head_commit }, $pr_url);
+        }
+
+        $c->render(json => { project => $repo_name, status => 'ok', msg => 'Pull request commits added for check', ref => $head_commit });
     }
 
     return $c->rendered(200);
