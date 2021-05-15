@@ -77,15 +77,6 @@ sub delete_commit {
 
 # ============================================================================ #
 
-sub delete_pr_title {
-    my $pr_link   = shift;
-    my $dbh       = get_db_conn();
-    my $sql       = qq/DELETE FROM GitPushEvent WHERE commit_id = 'NONE' AND git_link = ?/;
-    $dbh->do($sql, undef, $pr_link);
-}
-
-# ============================================================================ #
-
 sub get_youtrack_id {
     my $message = shift;
 
@@ -105,7 +96,7 @@ sub get_youtrack_ticket {
     return if (!$ticket_id);
 
     if (exists $verified_tickets->{$ticket_id}) {
-        return $verified_tickets->{$ticket_id}->{Link};
+        return $verified_tickets->{$ticket_id};
     }
 
     my $yt_token = $ENV{YOUTRACK_TOKEN};
@@ -155,7 +146,7 @@ sub get_youtrack_ticket {
                 $sleep_time = 3600 if ($sleep_time > 3600);
             }
             print "Setting sleep time to $sleep_time seconds\n";
-            return "WAIT";
+            return { Link => "WAIT" }; 
         }
 
         $verified_tickets->{$ticket_id} = undef;
@@ -166,7 +157,7 @@ sub get_youtrack_ticket {
     $verified_tickets->{$ticket_id} = decode_json($ticket->decoded_content);
     $verified_tickets->{$ticket_id}->{Link} = $yt->as_string;
 
-    return $verified_tickets->{$ticket_id}->{Link};
+    return $verified_tickets->{$ticket_id};
 }
 
 # ============================================================================ #
@@ -187,26 +178,9 @@ sub github_status {
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");
 
-    my $status_icon = ':white_check_mark: ';
-    my $desc = 'Commit message mentions a valid Youtrack ticket';
-    if ($status eq 'error') {
-        $desc = 'No valid YouTrack ticket - Commit message does not mention a valid Youtrack ticket';
-        $status_icon = ':x: ';
-    }
-    elsif ($status eq 'pending') {
-        $desc = "Waiting for youtrack - Commit message mentions a ticket";
-        $status_icon = ':warning: ';
-    }
-
-    if ($yt_id) {
-        $desc = $yt_id . ' - ' . $desc;
-    }
-
-    $desc = $status_icon . $desc;
-
     my $resp_body = {
         "context"     => "ci/chk-youtrack",
-        "description" => $desc,
+        "description" => $commit->{desc},
         "state"       => $status,
     };
 
@@ -258,39 +232,119 @@ sub check_all_commits {
         return;
     }
 
+    my %commit_hash;
+    my %pr_hash;
     foreach my $commit (@{$commits}) {
+        if ($commit->{commit_id} =~ /^PRT\|/) {
+            my (undef, $base_branch, $id) = split('\|', $commit->{commit_id});
+            $commit->{commit_id} = $id;
+            $commit->{base_branch} = $base_branch;
+            $pr_hash{$id} = $commit;
+        }
+        else {
+            $commit_hash{$commit->{commit_id}} = $commit;
+        }
+    }
+
+    if(!%commit_hash){
+        $sleep_time++;
+        $sleep_time = 10 if ($sleep_time > 10);
+        return;
+    }
+
+    foreach my $cid (keys %commit_hash) {
+        my $commit = $commit_hash{$cid};
+
         my $yt_id = get_youtrack_id($commit->{message});
 
         my $pr_link = $commit->{git_link};
         if (!$yt_id) {
             print STDERR "Message: \"$commit->{message}\" does not have a matching youtrack Id\n";
+            $commit->{desc} = 'Youtrack ticket not mentioned in the commit message';
             github_status($commit, 'error');
-            delete_pr_title($pr_link) if($commit->{commit_id} eq 'NONE');
             next;
         }
 
+        $commit->{desc} = "Checking youtrack for issue id $yt_id";
         github_status($commit, 'pending', undef, $yt_id);
-        my $ticket_url = get_youtrack_ticket($yt_id);
+        my $ticket = get_youtrack_ticket($yt_id);
 
-        if (!$ticket_url) {
+        if (!$ticket) {
+            $commit->{desc} = "Unable to find youtrack issue id $yt_id, Please verify!";
             print STDERR "Valid YouTrack ticket not found with Id: $yt_id\n";
             github_status($commit, 'error');
-            delete_pr_title($pr_link) if($commit->{commit_id} eq 'NONE');
             next;
         }
-        elsif ($ticket_url eq 'WAIT') {
-            github_status($commit, 'pending', undef, $yt_id);
 
+        my $ticket_url = $ticket->{Link};
+        if ($ticket_url eq 'WAIT') {
             # YouTrack not available or network issue, sleep and try again later
             return;
         }
-        else {
-            github_status($commit, 'success', $ticket_url, $yt_id);
-            add_yt_comment($yt_id, $pr_link);
-        }
+
+        $commit->{desc} = $yt_id . ': ' .$ticket->{summary};
+        my $st = check_pr_title($cid, \%pr_hash, $commit);
+
+        return if(!$st);
+
+        github_status($commit, $st, $ticket_url, $yt_id);
+        add_yt_comment($yt_id, $pr_link);
     }
 
     $sleep_time = 0;
+}
+
+# ============================================================================ #
+
+sub check_pr_title {
+    my ($cid, $pr_hash, $head_commit) = @_;
+
+    return 'success' if(!exists $pr_hash->{$cid});
+
+    my $commit = $pr_hash->{$cid};
+    my $commit_hash = "PRT|$commit->{base_branch}|$cid";
+
+    my $yt_id = get_youtrack_id($commit->{message});
+
+    my $pr_link = $commit->{git_link};
+    if (!$yt_id) {
+        print STDERR "PR Title: \"$commit->{message}\" does not have a youtrack Id\n";
+        $head_commit->{desc} = 'Youtrack ticket not mentioned in the PR title';
+        delete_commit($commit_hash);
+        return 'error';
+    }
+
+    my $br_check = $ENV{PR_BRANCH_YT_CHECK};
+    if($br_check) {
+        my ($bb_reg, $yt_reg) = split('=', $br_check);
+
+        if($commit->{base_branch} =~ /$bb_reg/i and $yt_id !~ /$yt_reg/i) {
+            print STDERR "PR Title: \"$commit->{message}\" does not have a $yt_reg youtrack Id\n";
+            $head_commit->{desc} = "PR title should have $yt_reg ticket for $bb_reg branch";
+            delete_commit($commit_hash);
+            return 'error';
+        }
+    }
+
+    my $ticket = get_youtrack_ticket($yt_id);
+
+    if (!$ticket) {
+        $head_commit->{desc} = "Unable to find youtrack issue id $yt_id, Please verify!";
+        print STDERR "Valid YouTrack ticket not found with Id: $yt_id\n";
+        delete_commit($commit_hash);
+        return 'error';
+    }
+
+    my $ticket_url = $ticket->{Link};
+
+    return if($ticket_url eq 'WAIT');
+
+    $head_commit->{desc} = $yt_id . ': ' .$ticket->{summary};
+
+    add_yt_comment($yt_id, $pr_link);
+    delete_commit($commit_hash);
+
+    return 'success';
 }
 
 # ============================================================================ #
@@ -326,7 +380,6 @@ sub add_yt_comment {
         elsif($c->{text} =~ /$pr_link/g) {
             #print "PR mentioned by user on $ticket_id\n";
             $comments_added->{"$ticket_id-$pr_link"} = 1;
-            delete_pr_title($pr_link);
             return;
         }
     }
@@ -346,7 +399,6 @@ sub add_yt_comment {
     if(!$update_required) {
         #print "PR already mentioned on $ticket_id\n";
         $comments_added->{"$ticket_id-$pr_link"} = 1;
-        delete_pr_title($pr_link);
         return;
     }
     
@@ -368,7 +420,6 @@ sub add_yt_comment {
     else {
         #print "Youtrack comment added/updated successfully on ticket $ticket_id\n";
         $comments_added->{"$ticket_id-$pr_link"} = 1;
-        delete_pr_title($pr_link);
     }
 }
 
@@ -410,26 +461,16 @@ sub github_check {
 
     my $gh_token = $gt->get_access_token;
 
-    my ($title, $desc);
-    if($yt_id and $verified_tickets->{$yt_id}) {
-        $title = "$yt_id: $verified_tickets->{$yt_id}->{summary}";
-        $desc = "$verified_tickets->{$yt_id}->{description}";
-    }
-
-    $title = "Valid ticket found" if(!$title);
-    $desc = 'Commit message mentions a valid Youtrack ticket' if(!$desc);
-
+    my $title = $commit->{desc};
+    my $desc = 'If you think there is something went wrong with this check, ';
+    $desc .= 'Please re-run this check or contact admin if the issue persist';
     my $status = 'completed';
     my $conclusion = 'success';
 
     if ($result eq 'error') {
-        $title = 'No ticket found';
-        $desc = 'No valid YouTrack ticket - Commit message does not mention a valid Youtrack ticket';
         $conclusion = 'failure';
     }
     elsif ($result eq 'pending') {
-        $title = "Pending Youtrack check for $yt_id";
-        $desc = "$yt_id: Waiting for youtrack - Commit message mentions a ticket";
         $status = 'in_progress';
         $conclusion = 'neutral';
     }
