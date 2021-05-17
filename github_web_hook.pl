@@ -23,6 +23,7 @@ post '/check_youtrack' => sub {
         my $req_hmac = $c->req->headers->header('X-Hub-Signature');
         my $hmac     = 'sha1=' . hmac_sha1_hex($c->req->body, $ENV{GITHUB_SECRET});
         if ($req_hmac ne $hmac) {
+            $c->render(json => { status => 'failed', msg => 'Signature mismatch' });
             $c->app->log->error("HMAC compare failed, sent 400", $req_hmac, $hmac);
             return $c->rendered(400);
         }
@@ -31,6 +32,7 @@ post '/check_youtrack' => sub {
     # Look only for push event
     my $req_event_type = $c->req->headers->header('X-GitHub-Event');
     if (!$req_event_type) {
+        $c->app->log->error("Github request received without X-GitHub-Event header");
         return $c->rendered(400);
     }
     elsif ($req_event_type !~ /^(push|pull_request|ping|installation|check_run)$/) {
@@ -44,8 +46,11 @@ post '/check_youtrack' => sub {
     # Github app installation/update
     if($req_event_type eq 'installation') {
 
+        $c->app->log->info("installation event received for action $params->{action}");
+
         if(!$ENV{GITHUB_APP_KEY_FILE}) {
             $c->app->log->error("Please set GITHUB_APP_KEY_FILE env");
+            $c->render(json => { status => 'failed', msg => 'Server configuration error' });
             return $c->rendered(500);
         }
 
@@ -58,9 +63,14 @@ post '/check_youtrack' => sub {
             access_token_url => $at_url,
             force_update => 1,
         );
-        return $c->rendered(200) if($gt->get_access_token);
+
+        if($gt->get_access_token) {
+            $c->render(json => { status => 'ok', msg => 'New access token generated' });
+            return $c->rendered(200);
+        }
 
         $c->app->log->error("Failed to create/refresh access_token");
+        $c->render(json => { status => 'failed', msg => 'Failed to create/refresh access_token' });
         return $c->rendered(500);
     }
 
@@ -68,6 +78,7 @@ post '/check_youtrack' => sub {
     my $repo_name = $repo->{name};
 
     if ($req_event_type eq 'ping') {
+        $c->app->log->info("---ping event received---");
         $c->render(json => { status => 'ok', project => $repo_name, msg => 'Configuration Success!' });
     }
     elsif ($req_event_type eq 'push') {
@@ -88,6 +99,7 @@ post '/check_youtrack' => sub {
             remote_url       => $repo->{ssh_url},
         };
         $push_emitter->emit($req_event_type => update_repo_state($data));
+        $c->app->log->info("Push event received for $owner/$data->{project}/$data->{ref} - added to queue");
         $c->render(json => { project => $repo->{name}, ref => $params->{ref}, status => 'ok', msg => 'Commit added for check'});
     }
     else {
@@ -125,6 +137,7 @@ post '/check_youtrack' => sub {
             add_commit($repo_name, $owner, { message => $pr_title, id => "PRT|$base_ref|" . $head_commit }, $pr_url);
         }
 
+        $c->app->log->info("PR event with action $pr_action received for $pr_url - added to queue");
         $c->render(json => { project => $repo_name, status => 'ok', msg => 'Pull request commits added for check', ref => $head_commit });
     }
 

@@ -109,7 +109,7 @@ sub get_youtrack_ticket {
     $ua->default_header('Accept'        => 'application/json');
     $ua->default_header('Content-Type'  => 'application/json');
 
-    my $ticket_fields = 'fields=numberInProject,project(shortName),summary,description';
+    my $ticket_fields = 'fields=numberInProject,summary';
 
     $yt->path_segments("youtrack", "api", "issues", $ticket_id);
 
@@ -168,7 +168,7 @@ sub github_status {
     my $commit_hash = $commit->{commit_id};
     return if($commit_hash eq 'NONE');
 
-    if($gt) {
+    if($gt and !$ENV{DISABLE_CHECK_API}) {
         github_check(@_);
         return;
     }
