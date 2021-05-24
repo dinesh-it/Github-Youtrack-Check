@@ -17,7 +17,7 @@ use GithubToken;
 $| = 1;
 
 # Check of required ENV's available
-foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST GITHUB_TOKEN/) {
+foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST/) {
     if (!$ENV{$var}) {
         die "$var ENV required\n";
     }
@@ -32,7 +32,7 @@ if($ENV{GITHUB_APP_KEY_FILE}) {
     if(!$gt->get_access_token) {
         die "Failed to get github app access token\n";
     }
-    print "Using github app, so will posting github checks instead of status\n";
+    print "Using github app access token\n";
 }
 
 my $verified_tickets = {};
@@ -183,6 +183,10 @@ sub github_status {
         "description" => $commit->{desc},
         "state"       => $status,
     };
+
+    if(length($resp_body->{description}) > 96) {
+        $resp_body->{description} = substr( $resp_body->{description}, 0, 90 ) . '...';
+    }
 
     if ($link) {
         $resp_body->{target_url} = $link;
@@ -383,7 +387,7 @@ sub add_yt_comment {
             return;
         }
     }
-    
+
     my $comment = $ci_comments[-1];
     my $comment_text = 'Pull Request(s) - Github commit mentions';
     my @path_seg = ("youtrack", "api", "issues", $ticket_id, "comments");
@@ -401,7 +405,7 @@ sub add_yt_comment {
         $comments_added->{"$ticket_id-$pr_link"} = 1;
         return;
     }
-    
+
     $comment_text .= "\n$pr_link";
 
     $yt->path_segments(@path_seg);
@@ -443,14 +447,14 @@ sub get_yt_comments {
     $yt->path_segments("youtrack", "api", "issues", $ticket_id, "comments");
 
     my $url = $yt->as_string . "?$ticket_fields";
-    
+
     my $ticket = $ua->get($url);
 
     if (!$ticket->is_success) {
         print "Failed! " . $ticket->status_line  . "\n";
         return;
     }
-    
+
     return decode_json($ticket->decoded_content);
 }
 
@@ -467,12 +471,19 @@ sub github_check {
     my $status = 'completed';
     my $conclusion = 'success';
 
+    if($status eq 'completed') {
+        $desc = 'If multiple tickets mentioned in the message, only the first ticket will be considered';
+    }
+
+    if($link) {
+        $desc = "Youtrack: $link\n\n" . $desc;
+    }
+
     if ($result eq 'error') {
         $conclusion = 'failure';
     }
     elsif ($result eq 'pending') {
         $status = 'in_progress';
-        $conclusion = 'neutral';
     }
 
     my $commit_hash = $commit->{commit_id};
@@ -483,7 +494,6 @@ sub github_check {
         name => 'ci/chk-youtrack',
         head_sha => $commit_hash,
         status => $status,
-        conclusion => $conclusion,
         output => {
             title => $title,
             summary => $desc,
@@ -492,8 +502,16 @@ sub github_check {
 
     $body->{details_url} = $link if($link);
 
-    $body->{started_at} = DateTime->now . 'Z' if($status eq 'in_progress');
-    $body->{completed_at} = DateTime->now . 'Z' if($status eq 'completed');
+    if($status eq 'in_progress') {
+        my $now = DateTime->now;
+        $body->{started_at} = $now . 'Z';
+    }
+
+    if($status eq 'completed') {
+        my $now = DateTime->now;
+        $body->{conclusion} = $conclusion;
+        $body->{completed_at} = $now . 'Z';
+    }
 
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");

@@ -14,7 +14,7 @@ use Fcntl qw(:flock);
 has 'private_key_file' => ( is => 'ro', required => 1 );
 has 'private_key' => (is => 'rw');
 has 'github_app_id' => ( is => 'rw' );
-has 'token_file' => ( is => 'rw', default => './github_app_access.token' );
+has 'token_file' => ( is => 'rw', default => '/tmp/github_app_access.token' );
 has 'access_token_url' => ( is => 'rw' );
 has 'access_token' => ( is => 'rw' );
 has 'expire_epoch' => ( is => 'rw' );
@@ -24,31 +24,26 @@ has 'token_last_modified' => ( is => 'rw' );
 sub get_access_token {
     my $self = shift;
 
-    $self->access_token_url('https://api.github.com/app/installations/16753352/access_tokens');
-
     # Get from text file
     $self->read_file;
-    if(!$self->force_update and $self->access_token) {
+    if($self->access_token) {
 
         my $validity = time - (5 * 60);
         if($self->expire_epoch and $self->expire_epoch > $validity) {
             return $self->access_token;
         }
         else {
-            print STDERR "Token getting expired, trying to get new token\n";
+            print "Token expired, trying to get new token\n";
         }
     }
 
-    my $get_token_url = $self->access_token_url;
-
-    if(!$get_token_url and !$self->github_app_id) {
-        die "No access_token_url or github_app_id to fetch access_token\n";
-    }
+    my $get_token_url = $self->_get_key('access_token_url');
 
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer " . $self->get_jwt_token);
     $ua->default_header('Content-Type' => "application/json");
 
+    print "Getting access_token via $get_token_url\n";
     my $res = $ua->post($get_token_url);
 
     if (!$res->is_success) {
@@ -71,7 +66,7 @@ sub get_jwt_token {
     my $self = shift;
 
     my $jwt = JSON::WebToken->encode({
-            iss => $self->github_app_id,
+            iss => $self->_get_key('github_app_id'),
             exp => time + (5 * 60),
             iat => time - 60,
         }, $self->get_private_key, "RS256");
@@ -84,8 +79,15 @@ sub get_private_key {
 
     return $self->private_key if(defined $self->private_key);
 
-    my $key_file = $self->private_key_file;
-    open my $F, '<', $key_file or die "Failed to open key file: $!";
+    my $key_file = $self->_get_key('private_key_file');
+
+    unless(-f $key_file) {
+        die "ERROR: private_key_file $key_file not found\n";
+    }
+
+    print "Reading secret from file $key_file\n";
+
+    open my $F, '<', $key_file or die "ERROR: Failed to open key file: $!";
     local $/ = undef;
     my $secret = <$F>;
     close $F;
@@ -95,14 +97,18 @@ sub get_private_key {
 sub read_file {
     my $self = shift;
 
-   return unless(-f $self->token_file);
+    return if($self->force_update);
 
-   my $last_modified = (stat $self->token_file)[9];
-   if($self->token_last_modified and $self->token_last_modified eq $last_modified) {
-       return;
-   }
+    return unless(-f $self->token_file);
 
-    open(my $fh, "<", $self->token_file) or die "Can't open token file: $!";
+    my $last_modified = (stat $self->token_file)[9];
+    if($self->token_last_modified and $self->token_last_modified eq $last_modified) {
+        return;
+    }
+
+    print "Reading access_token from " . $self->token_file . "\n";
+
+    open(my $fh, "<", $self->token_file) or die "ERROR: Can't open token file: $!";
     my $data = <$fh>;
     close $fh;
 
@@ -118,11 +124,25 @@ sub write_file {
     my $self = shift;
     my $token = shift;
 
-    open(my $fh, ">", $self->token_file) or die "Can't open token file: $!";
+    print "Writing access_token to " . $self->token_file . "\n";
 
-    flock($fh, LOCK_EX) or die "Cannot lock file - $!\n";
+    open(my $fh, ">", $self->token_file) or die "ERROR: Can't open token file: $!";
+
+    flock($fh, LOCK_EX) or die "ERROR: Cannot lock file - $!\n";
     print $fh $self->access_token_url . ',' . $self->access_token . ',' . $self->github_app_id . ',' . $self->expire_epoch . "\n";
-    flock($fh, LOCK_UN) or die "Cannot unlock file - $!\n";
+    flock($fh, LOCK_UN) or die "ERROR: Cannot unlock file - $!\n";
+
+    chmod oct('0600'), $self->token_file;
+}
+
+sub _get_key {
+    my ($self, $key) = @_;
+
+    unless($self->$key) {
+        die "ERROR: Missing $key in GithubToken constructor\n";
+    }
+
+    return $self->$key;
 }
 
 1;

@@ -1,1 +1,5 @@
 *.bak
+*.db
+*.token
+env.sh
+*.pem

@@ -35,7 +35,7 @@ post '/check_youtrack' => sub {
         $c->app->log->error("Github request received without X-GitHub-Event header");
         return $c->rendered(400);
     }
-    elsif ($req_event_type !~ /^(push|pull_request|ping|installation|check_run)$/) {
+    elsif ($req_event_type !~ /^(push|pull_request|ping|installation|check_run|installation_repositories)$/) {
         $c->app->log->warn(
             "Consider disabling web hook for event type $req_event_type, only push/pull_request type is required");
         return $c->rendered(200);
@@ -44,7 +44,7 @@ post '/check_youtrack' => sub {
     my $params = $c->req->json;
 
     # Github app installation/update
-    if($req_event_type eq 'installation') {
+    if($req_event_type eq 'installation' || $req_event_type eq 'installation_repositories') {
 
         $c->app->log->info("installation event received for action $params->{action}");
 
@@ -201,7 +201,7 @@ websocket '/githubpush' => sub {
 sub send_stat {
     my ($s, $c) = @_;
     my $ev_str =
-      "$s->{project}|$s->{ref}|$s->{latest_commit_id}|$s->{last_updated}|$s->{remote_url}|$s->{updated_epoch}";
+    "$s->{project}|$s->{ref}|$s->{latest_commit_id}|$s->{last_updated}|$s->{remote_url}|$s->{updated_epoch}";
     if ($ENV{GH_WEBSOCKET_SECRET}) {
         $c->log->debug("Encrypting: $ev_str");
         $ev_str = $crypt->encrypt($ev_str, $ENV{GH_WEBSOCKET_SECRET});
@@ -216,7 +216,7 @@ sub add_commit {
     my ($repo_name, $owner, $commit, $pr_url) = @_;
     my $dbh = get_db_conn();
     my $sql =
-      qq/INSERT INTO GitPushEvent (event_type, project, owner, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?,?)/;
+    qq/INSERT INTO GitPushEvent (event_type, project, owner, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?,?)/;
     my $sth = $dbh->prepare($sql);
     return $sth->execute('push', $repo_name, $owner, $commit->{id}, $commit->{message}, $pr_url, time);
 }
@@ -265,7 +265,7 @@ sub update_repo_state {
     my $dbh = get_db_conn();
 
     my ($project, $ref, $last_commit, $last_update, $remote_url) =
-      ($data->{project}, $data->{ref}, $data->{latest_commit_id}, $data->{last_updated}, $data->{remote_url});
+    ($data->{project}, $data->{ref}, $data->{latest_commit_id}, $data->{last_updated}, $data->{remote_url});
 
     my $now = time;
 
@@ -275,17 +275,17 @@ sub update_repo_state {
     my $sql;
     if (!$result or !@{$result}) {
         $sql =
-qq/INSERT INTO GitRepoState (project, ref, latest_commit_id, last_updated, remote_url, updated_epoch) VALUES(?,?,?,?,?,?)/;
+        qq/INSERT INTO GitRepoState (project, ref, latest_commit_id, last_updated, remote_url, updated_epoch) VALUES(?,?,?,?,?,?)/;
         my $sth = $dbh->prepare($sql);
         $sth->execute($project, $ref, $last_commit, $last_update, $remote_url, $now)
-          or print STDERR "Failed to insert GitRepoState record:" . $dbh->errstr;
+            or print STDERR "Failed to insert GitRepoState record:" . $dbh->errstr;
     }
     else {
         $sql =
-qq/UPDATE GitRepoState SET latest_commit_id = ?, last_updated = ?, remote_url = ?, updated_epoch = ? WHERE project = ? AND ref = ?/;
+        qq/UPDATE GitRepoState SET latest_commit_id = ?, last_updated = ?, remote_url = ?, updated_epoch = ? WHERE project = ? AND ref = ?/;
         my $sth = $dbh->prepare($sql);
         $sth->execute($last_commit, $last_update, $remote_url, $now, $project, $ref)
-          or print STDERR "Failed to update GitRepoState record:" . $dbh->errstr;
+            or print STDERR "Failed to update GitRepoState record:" . $dbh->errstr;
     }
 
     $data->{updated_epoch} = $now;

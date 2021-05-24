@@ -1,11 +1,15 @@
 Crypt::Lite
+DateTime
 DBI
 DBD::SQLite
 Digest::SHA
+HTTP:Date
 IO::Socket::SSL
 JSON::XS
+JOSN::WebToken
 LWP::UserAgent
 LWP::Protocol::https
+Moose
 Mojolicious::Lite
 Mojo::EventEmitter
 URI::Builder
