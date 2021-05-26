@@ -20,3 +20,4 @@ if($gt->get_access_token) {
     print "ok\n"
 }
 
+print "Readonly token: " . $gt->get_read_only_access_token . "\n";

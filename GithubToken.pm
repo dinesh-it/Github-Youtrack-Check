@@ -20,6 +20,8 @@ has 'access_token' => ( is => 'rw' );
 has 'expire_epoch' => ( is => 'rw' );
 has 'force_update' => ( is => 'rw' );
 has 'token_last_modified' => ( is => 'rw' );
+has 'read_only_token' => ( is => 'rw' );
+has 'read_only_token_expiry' => ( is => 'rw' );
 
 sub get_access_token {
     my $self = shift;
@@ -60,6 +62,46 @@ sub get_access_token {
     $self->write_file;
 
     return $self->access_token;
+}
+
+sub get_read_only_access_token {
+    my $self = shift;
+
+    # Return same token if it has validity of atleast 10 more minutes
+    if( $self->read_only_token and $self->read_only_token_expiry < ( time - (10 * 60)) ) {
+        return $self->read_only_token;
+    }
+
+    # Get other details from text file
+    $self->read_file;
+
+    my $get_token_url = $self->_get_key('access_token_url');
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer " . $self->get_jwt_token);
+    $ua->default_header('Content-Type' => "application/json");
+
+    my $body = {
+        permissions => {
+            contents => 'read'
+        }
+    };
+
+    print "Getting content read only access_token via $get_token_url\n";
+    my $res = $ua->post($get_token_url, Content => encode_json($body) );
+
+    if (!$res->is_success) {
+        my $res_code = $res->code;
+        print STDERR "Error: $res_code, for URL: $get_token_url\n";
+        return undef;
+    }
+
+    my $json_resp = decode_json($res->decoded_content);
+
+    $self->read_only_token($json_resp->{token});
+    $self->read_only_token_expiry(str2time($json_resp->{expires_at}));
+
+    return $self->read_only_token;
 }
 
 sub get_jwt_token {

@@ -14,6 +14,7 @@ use GithubToken;
 $| = 1;
 my $push_emitter = Mojo::EventEmitter->new;
 my $crypt        = Crypt::Lite->new(debug => 0, encoding => 'hex8');
+my $gt           = GithubToken->new(private_key_file => $ENV{GITHUB_APP_KEY_FILE}) if($ENV{GITHUB_APP_KEY_FILE});
 
 post '/check_youtrack' => sub {
     my ($c) = @_;
@@ -57,7 +58,7 @@ post '/check_youtrack' => sub {
         my $app_id = $params->{installation}->{app_id};
         my $at_url = $params->{installation}->{access_tokens_url};
 
-        my $gt = GithubToken->new(
+        $gt = GithubToken->new(
             private_key_file => $ENV{GITHUB_APP_KEY_FILE},
             github_app_id => $app_id,
             access_token_url => $at_url,
@@ -154,6 +155,8 @@ websocket '/githubpush' => sub {
     my $cb_push = $push_emitter->on(
         push => sub {
             my ($pm, $s) = @_;
+            my $ghat = $gt->get_read_only_access_token if($gt);
+            $s->{token} = $ghat;
             send_stat($s, $c);
         }
     );
@@ -172,7 +175,9 @@ websocket '/githubpush' => sub {
             if ($msg eq 'give-latest') {
                 $c->log->info("Received $msg from $ip");
                 my $stats = get_all_repo_state();
+                my $ghat = $gt->get_read_only_access_token if($gt);
                 foreach my $s (@{$stats}) {
+                    $s->{token} = $ghat;
                     send_stat($s, $c);
                 }
             }
@@ -200,8 +205,17 @@ websocket '/githubpush' => sub {
 # Send the stat in websocket
 sub send_stat {
     my ($s, $c) = @_;
+
+    my $git_url = $s->{remote_url};
+    if($s->{token}) {
+        # Send remote URL with access_token
+        $git_url =~ s/^git\@github.com://;
+        my $r = 'https://x-access-token:' . $s->{token} . '@github.com';
+        $git_url = "$r/$git_url";
+    }
+
     my $ev_str =
-    "$s->{project}|$s->{ref}|$s->{latest_commit_id}|$s->{last_updated}|$s->{remote_url}|$s->{updated_epoch}";
+    "$s->{project}|$s->{ref}|$s->{latest_commit_id}|$s->{last_updated}|$git_url|$s->{updated_epoch}";
     if ($ENV{GH_WEBSOCKET_SECRET}) {
         $c->log->debug("Encrypting: $ev_str");
         $ev_str = $crypt->encrypt($ev_str, $ENV{GH_WEBSOCKET_SECRET});
