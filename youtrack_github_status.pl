@@ -17,10 +17,14 @@ use GithubToken;
 $| = 1;
 
 # Check of required ENV's available
-foreach my $var (qw/YOUTRACK_MATCH_KEY YOUTRACK_TOKEN YOUTRACK_HOST/) {
+foreach my $var (qw/YOUTRACK_TOKEN YOUTRACK_HOST/) {
     if (!$ENV{$var}) {
         die "$var ENV required\n";
     }
+}
+
+if(!$ENV{GITHUB_APP_KEY_FILE} and !$ENV{GITHUB_TOKEN}) {
+    die "Either GITHUB_APP_KEY_FILE or GITHUB_TOKEN env required\n";
 }
 
 my $gt;
@@ -38,6 +42,8 @@ if($ENV{GITHUB_APP_KEY_FILE}) {
 my $verified_tickets = {};
 my $comments_added   = {};
 my $sleep_time       = 5;
+my $match_key_last_tried;
+my $youtrack_match_key = get_youtrack_match_key();
 
 while (1) {
     sleep($sleep_time);
@@ -80,9 +86,17 @@ sub delete_commit {
 sub get_youtrack_id {
     my $message = shift;
 
-    my $matchkey = $ENV{YOUTRACK_MATCH_KEY};
-    if ($message =~ /$matchkey/i) {
+    if ($message =~ /$youtrack_match_key/i) {
         return uc($1);
+    }
+
+    # Probably new project added so lets update our list and try one more time
+    if($message =~ /[A-Z0-9]-\d+/) {
+        $youtrack_match_key = get_youtrack_match_key();
+
+        if ($message =~ /$youtrack_match_key/i) {
+            return uc($1);
+        }
     }
 
     return;
@@ -542,3 +556,52 @@ sub github_check {
 }
 
 # ============================================================================ #
+
+sub get_youtrack_match_key {
+
+    # Avoid traying again and again in a loop - try again only after 5 mins
+    if($match_key_last_tried and $match_key_last_tried > (time - (60 * 5))) {
+        return $youtrack_match_key;
+    }
+
+    $match_key_last_tried = time;
+
+    print "Getting projects list from youtrack\n";
+    my $yt_token = $ENV{YOUTRACK_TOKEN};
+    my $yt_host  = $ENV{YOUTRACK_HOST};
+
+    my $yt = URI::Builder->new(uri => $yt_host);
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer $yt_token");
+    $ua->default_header('Accept'        => 'application/json');
+    $ua->default_header('Content-Type'  => 'application/json');
+
+    $yt->path_segments("youtrack", "api", "admin", 'projects');
+
+    my $res = $ua->get($yt->as_string . '?fields=shortName');
+
+    if(!$res->is_success) {
+        print "ERROR: Status - " . $res->status . "\n";
+        die "Failed to get project ID's\n";
+    }
+
+    my $projects = decode_json($res->decoded_content);
+
+    # Build reg ex
+    # eg: ((?:P3|P2|MA|DSP|OPS)-\d+)
+
+    my @proj_codes;
+    foreach (@{$projects}) {
+        push(@proj_codes, $_->{shortName});
+    }
+
+    if(!@proj_codes) {
+        die "ERROR: Failed to fetch project details, empty list received!\n";
+    }
+
+    my $reg_ex = '((?:' . join('|', @proj_codes) . ')-\d+)';
+    print "Ticket match key: $reg_ex\n";
+
+    return $reg_ex;
+}

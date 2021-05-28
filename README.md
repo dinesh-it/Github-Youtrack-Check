@@ -9,7 +9,6 @@ Micro service to
 All the configs are read from ENV
 ```
 # Required
-export YOUTRACK_MATCH_KEY="^((?:P|M)(?:AY|\d+)-\d+)"
 export YOUTRACK_TOKEN="<youtrack_token>"
 export YOUTRACK_HOST="<youtrack_host>"
 export GITHUB_TOKEN="github_token"
@@ -24,9 +23,6 @@ export GITHUB_APP_KEY_FILE='./private-key.pem'
 export PR_BRANCH_YT_CHECK='PRODUCTION*=CLUSTER-*'
 export DISABLE_CHECK_API=1
 ```
-
-#### YOUTRACK_MATCH_KEY
-Regular expresion used to extract youtrack ticket from the commit message. $1 will be considered as a ticket number from the given regular expression.
 
 #### YOUTRACK_TOKEN
 YouTrack permanent token. Refer [Create a Permanent Token](https://www.jetbrains.com/help/youtrack/standalone/Manage-Permanent-Token.html#obtain-permanent-token) at youtrack help section to create one.
