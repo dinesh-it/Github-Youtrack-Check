@@ -160,6 +160,7 @@ sub read_file {
     $self->github_app_id($data[2]);
     chomp($data[3]);
     $self->expire_epoch($data[3]);
+    $self->token_last_modified((stat $self->token_file)[9]);
 }
 
 sub write_file {
