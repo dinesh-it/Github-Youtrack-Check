@@ -264,6 +264,16 @@ sub check_all_commits {
         }
     }
 
+	# Process and delete stale PR title entries
+	# It does not push status to github but adds comments
+	# in youtrack if needed
+    if(!%commit_hash and %pr_hash) {
+        foreach my $cid (keys %pr_hash) {
+            my $h = {};
+            check_pr_title($cid, \%pr_hash, $h);
+        }
+    }
+
     if(!%commit_hash){
         $sleep_time++;
         $sleep_time = 10 if ($sleep_time > 10);

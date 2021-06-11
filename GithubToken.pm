@@ -67,11 +67,6 @@ sub get_access_token {
 sub get_read_only_access_token {
     my $self = shift;
 
-    # Return same token if it has validity of atleast 10 more minutes
-    if( $self->read_only_token and $self->read_only_token_expiry < ( time - (10 * 60)) ) {
-        return $self->read_only_token;
-    }
-
     # Get other details from text file
     $self->read_file;
 
@@ -99,6 +94,7 @@ sub get_read_only_access_token {
     my $json_resp = decode_json($res->decoded_content);
 
     $self->read_only_token($json_resp->{token});
+    print "NEW RO TOKEN: " . $self->read_only_token . "\n";
     $self->read_only_token_expiry(str2time($json_resp->{expires_at}));
 
     return $self->read_only_token;
@@ -141,12 +137,12 @@ sub read_file {
 
     return if($self->force_update);
 
-    return unless(-f $self->token_file);
+   return unless(-f $self->token_file);
 
-    my $last_modified = (stat $self->token_file)[9];
-    if($self->token_last_modified and $self->token_last_modified eq $last_modified) {
-        return;
-    }
+   my $last_modified = (stat $self->token_file)[9];
+   if($self->token_last_modified and $self->token_last_modified eq $last_modified) {
+       return;
+   }
 
     print "Reading access_token from " . $self->token_file . "\n";
 
