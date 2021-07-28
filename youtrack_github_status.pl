@@ -592,7 +592,7 @@ sub get_youtrack_match_key {
     my $res = $ua->get($yt->as_string . '?fields=shortName');
 
     if(!$res->is_success) {
-        print "ERROR: Status - " . $res->status . "\n";
+        print "ERROR: Status - " . $res->status_line . "\n";
         die "Failed to get project ID's\n";
     }
 
