@@ -6,6 +6,9 @@ use DBI;
 use LWP::UserAgent;
 use URI::Builder;
 use JSON::XS;
+use Data::Dumper;
+use HTTP::Date;
+use Mojo::IOLoop;
 
 use FindBin;
 use lib $FindBin::Bin;
@@ -31,34 +34,28 @@ if($ENV{GITHUB_APP_KEY_FILE}) {
     print "Using github app access token for github API\n";
 }
 
-my $sleep_time = 0;
-while (1) {
-    sleep($sleep_time);
-    if (!check_all_pull_requests()) {
-        $sleep_time += 1;
-        $sleep_time = 10 if ($sleep_time > 10);
-        next;
-    }
-    $sleep_time = 0;
-}
+# Pool for changes from last 3 minutes
+our $last_pooled_at = time - 180;
 
 # ============================================================================ #
 
+my $global_dbh;
 sub get_db_conn {
+    return $global_dbh if($global_dbh);
     my $driver   = "SQLite";
     my $database = $ENV{GITHUB_WEB_HOOK_DB} ||= "/tmp/github_web_hook.db";
     my $userid   = $ENV{GITHUB_WEB_HOOK_DB_USER} //= "";
     my $password = $ENV{GITHUB_WEB_HOOK_DB_PWD} //= "";
     my $dsn      = "DBI:$driver:dbname=$database";
-    my $dbh      = DBI->connect($dsn, $userid, $password, {RaiseError => 1}) or die $DBI::errstr;
-    return $dbh;
+    $global_dbh  = DBI->connect($dsn, $userid, $password, {RaiseError => 1}) or die $DBI::errstr;
+    return $global_dbh;
 }
 
 # ============================================================================ #
 
-sub check_all_pull_requests {
+sub check_db_pull_requests {
     my $dbh    = get_db_conn();
-    my $sql    = qq/SELECT * FROM GitPushEvent WHERE event_type = 'pull_request' ORDER BY created_epoch asc LIMIT 5/;
+    my $sql    = qq/SELECT * FROM GitPushEvent WHERE event_type = 'pull_request' ORDER BY created_epoch asc/;
     my $result = $dbh->selectall_arrayref($sql, {Slice => {}});
     if (!$result or !@{$result}) {
         return 0;
@@ -215,3 +212,121 @@ sub get_commits_data {
 }
 
 # ============================================================================ #
+
+sub pool_gh_pending_prs {
+    my $gh_token = $gt ? $gt->get_access_token : $ENV{GITHUB_TOKEN};
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer $gh_token");
+
+    my $page_url = 'https://api.github.com/orgs/exceleron/repos?per_page=100';
+
+    $last_pooled_at = time - 10;
+    my $res      = $ua->get($page_url);
+    my $res_code = $res->code;
+
+    my $res_json = decode_json($res->decoded_content);
+
+    if (!$res->is_success) {
+        print "Error: " . $res->status_line . " for URL: $page_url\n";
+        print Dumper($res_json);
+        return;
+    }
+
+    foreach my $rep (@{$res_json}) {
+        my $last_pushed = str2time($rep->{pushed_at});
+        my $last_updated = str2time($rep->{updated_at});
+        if($last_updated > $last_pooled_at || $last_pushed > $last_pooled_at) {
+            print "Pooling for repo $rep->{name}\n";
+            add_pending_prs($rep->{name});
+        }
+    }
+}
+
+# ============================================================================ #
+
+sub add_pending_prs {
+    my $repo = shift;
+    my $gh_token = $gt ? $gt->get_access_token : $ENV{GITHUB_TOKEN};
+
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => "Bearer $gh_token");
+
+    my $page_url = "https://api.github.com/repos/exceleron/$repo/pulls?per_page=100";
+
+    my $res      = $ua->get($page_url);
+    my $res_code = $res->code;
+
+    if (!$res->is_success) {
+        print "Error: $res_code, for URL: $page_url\n";
+        print Dumper($res->decoded_content);
+        return;
+    }
+
+    my $res_json = decode_json($res->decoded_content);
+
+    foreach my $pr (@{$res_json}) {
+        my $status_url = $pr->{statuses_url};
+        my $statuses_res = $ua->get($status_url);
+
+        my $pr_last_updated;
+        if($pr->{updated_at}) {
+            $pr_last_updated = str2time($pr->{updated_at});
+        }
+        else {
+            $pr_last_updated = str2time($pr->{created_at});
+        }
+
+        if(!$statuses_res->is_success) {
+            print "Failed to get status for PR $pr->{url}\n";
+            next;
+        }
+
+        my $statuses_json = decode_json($statuses_res->decoded_content);
+        #print Dumper($statuses_json);
+
+        my $status_last_updated = 0;
+        my $status = '';
+        foreach my $st (@{$statuses_json}) {
+            if($st->{context} eq 'ci/chk-youtrack') {
+                $status_last_updated = str2time($st->{updated_at});
+                $status = $st->{state};
+                next;
+            }
+        }
+
+        if($status ne 'success' and $status_last_updated < $pr_last_updated) {
+            print "Adding PR for check from pooling method: $pr->{url}, Last state: $status\n";
+            add_pull_request($repo, $pr->{commits_url}, $pr->{html_url});
+        }
+    }
+}
+
+# ============================================================================ #
+
+sub add_pull_request {
+    my ($repo_name, $commits_url, $pr_link) = @_; 
+    my $dbh = get_db_conn();
+    my $sql = qq/INSERT INTO GitPushEvent (event_type, project, commit_id, message, git_link, created_epoch) VALUES(?,?,?,?,?,?)/;
+    my $sth = $dbh->prepare($sql);
+    return $sth->execute('pull_request', $repo_name, undef, $commits_url, $pr_link, time);
+}
+
+# ============================================================================ #
+
+check_db_pull_requests();
+
+# Pool github for changes every 3 minutes
+Mojo::IOLoop->recurring(180 => sub {
+        pool_gh_pending_prs();
+    });
+
+Mojo::IOLoop->recurring( 10 => sub {
+        check_db_pull_requests();
+    });
+
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
+
+# ============================================================================ #
+
+
