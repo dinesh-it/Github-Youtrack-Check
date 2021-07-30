@@ -30,7 +30,7 @@ sub get_access_token {
     $self->read_file;
     if($self->access_token) {
 
-        my $validity = time - (5 * 60);
+        my $validity = time + (2 * 60);
         if($self->expire_epoch and $self->expire_epoch > $validity) {
             return $self->access_token;
         }
