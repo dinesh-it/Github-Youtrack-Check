@@ -42,8 +42,13 @@ if($ENV{GITHUB_APP_KEY_FILE}) {
     print "Using github app access token for github API\n";
 }
 
+# Option to specify the seconds before to check for
+# If the service is down for an hour we can run this script with 3600
+# seconds
+my $last_pooled_at = int($ARGV[0]);
+
 # Pool for changes from last 3 minutes
-our $last_pooled_at = time - 180;
+$last_pooled_at = $last_pooled_at || time - 180;
 
 # Cache to avoid multiple pings to youtrac for same query
 my $verified_tickets = {};
@@ -98,8 +103,12 @@ sub add_commits {
 
     foreach my $commit (@{$data}) {
         $count += $sth->execute('push', $project, $owner, $commit->{id}, $commit->{message}, $pr_link, time);
-        $commit->{desc} = "Commit queued for checking Youtrack ticket";
-        post_github_status($commit, 'pending');
+        post_github_status({
+            commit_id => $commit->{id},
+            desc => "Commit queued for checking Youtrack ticket",
+            owner => $owner,
+            project => $project,
+        }, 'pending');
     }
 
     if ($count != @{$data}) {
@@ -288,7 +297,6 @@ sub pool_gh_pending_prs {
 
     my $page_url = 'https://api.github.com/orgs/exceleron/repos?per_page=100';
 
-    $last_pooled_at = time - 10;
     my $res      = $ua->get($page_url);
     my $res_code = $res->code;
 
@@ -308,6 +316,8 @@ sub pool_gh_pending_prs {
             add_pending_prs($rep->{name});
         }
     }
+
+    $last_pooled_at = time - 10;
 }
 
 # ============================================================================ #
@@ -333,6 +343,12 @@ sub add_pending_prs {
     my $res_json = decode_json($res->decoded_content);
 
     foreach my $pr (@{$res_json}) {
+
+        my $last_updated = str2time($pr->{updated_at});
+        if($last_updated < $last_pooled_at) {
+            next;
+        }
+
         my $status_url = $pr->{statuses_url};
         my $statuses_res = $ua->get($status_url);
 
@@ -358,7 +374,7 @@ sub add_pending_prs {
             if($st->{context} eq 'ci/chk-youtrack') {
                 $status_last_updated = str2time($st->{updated_at});
                 $status = $st->{state};
-                next;
+                last;
             }
         }
 
@@ -437,7 +453,7 @@ sub post_github_status {
         return;
     }
 
-    my $gh_token = $ENV{GITHUB_TOKEN};
+    my $gh_token = $gt ? $gt->get_access_token : $ENV{GITHUB_TOKEN};
 
     my $ua = LWP::UserAgent->new();
     $ua->default_header('Authorization' => "Bearer $gh_token");
@@ -539,8 +555,8 @@ sub check_all_commits {
             next;
         }
 
-        $commit->{desc} = "Checking youtrack for issue id $yt_id";
-        post_github_status($commit, 'pending', undef, $yt_id);
+        #$commit->{desc} = "Checking youtrack for issue id $yt_id";
+        #post_github_status($commit, 'pending', undef, $yt_id);
         my $ticket = get_youtrack_ticket($yt_id);
 
         if (!$ticket) {
@@ -883,10 +899,9 @@ $event_loop->recurring( 10 => sub {
         check_all_commits();
     });
 
-# Check everything on the init
+pool_gh_pending_prs();
 check_db_pull_requests();
 check_all_commits();
-pool_gh_pending_prs();
 
 print "Starting recurring timers...\n";
 $event_loop->start unless $event_loop->is_running;
