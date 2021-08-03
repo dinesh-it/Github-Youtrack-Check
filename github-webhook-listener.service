@@ -1,0 +1,12 @@
+[Unit]
+Description=Microserver for listening github webhooks and updated local database
+AssertFileIsExecutable=/opt/git/Github-Youtrack-Check/github_web_hook.pl
+After=network.target
+
+[Service]
+EnvironmentFile=/opt/git/Github-Youtrack-Check/envs
+ExecStart=/opt/git/Github-Youtrack-Check/github_web_hook.pl daemon -m production -l http://*:80
+Restart=always
+
+[Install]
+WantedBy=github-youtrack-status-update.service github-pull-commits.service multi-user.target
