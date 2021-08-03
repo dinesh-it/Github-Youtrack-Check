@@ -72,7 +72,7 @@ If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise 
 `./check_spooler.pl`
 
 Additionally there is a helper script to force check a pull request without waiting for github web hook.
-`./add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
+`./helper/add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
 
 Thats all, green tick marks or red cross mark will appear for each commits you push to github now.
 
