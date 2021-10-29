@@ -549,6 +549,13 @@ sub check_all_commits {
 
         my $pr_link = $commit->{git_link};
         if (!$yt_id) {
+
+            if($commit->{message} =~ /^Merge /) {
+                print STDERR "Message: \"$commit->{message}\" - check skipped\n";
+                $commit->{desc} = 'Check skipped for merge commit';
+                post_github_status($commit, 'success');
+                next;
+            }
             print STDERR "Message: \"$commit->{message}\" does not have a matching youtrack Id\n";
             $commit->{desc} = 'Youtrack ticket not mentioned in the commit message';
             post_github_status($commit, 'error');
