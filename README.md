@@ -67,12 +67,14 @@ If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise 
 * Configure your Github web hook with address pointing to `http://<yourhost>:3000/check_youtrack` for `push` and `pull_request` event types.
     * Web Hook settings can be found at Github.com Repository->settings->Hooks
 * You should start seeing the request coming to your microservice on each push to github now.
+* Start youtrack check service
+`./youtrack_github_status.pl`
 
-* Start youtrack spooler for checking the entrier in DB and process
-`./check_spooler.pl`
+* Start pull-commits service
+`./github_pull_commits.pl`
 
 Additionally there is a helper script to force check a pull request without waiting for github web hook.
-`./helper/add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
+`./add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
 
 Thats all, green tick marks or red cross mark will appear for each commits you push to github now.
 

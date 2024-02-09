@@ -45,10 +45,8 @@ if($ENV{GITHUB_APP_KEY_FILE}) {
 # Option to specify the seconds before to check for
 # If the service is down for an hour we can run this script with 3600
 # seconds
-my $last_pooled_at = int($ARGV[0]);
-
-# Pool for changes from last 3 minutes
-$last_pooled_at = $last_pooled_at || time - 180;
+# Otherwise Pool for changes from last 3 minutes
+my $last_pooled_at = $ARGV[0] ? int($ARGV[0]) : time - 180;
 
 # Cache to avoid multiple pings to youtrac for same query
 my $verified_tickets = {};
@@ -429,7 +427,7 @@ sub get_youtrack_ticket {
             return { Link => "WAIT" }; 
         }
 
-        $verified_tickets->{$ticket_id} = undef;
+        delete $verified_tickets->{$ticket_id};
         return;
     }
 
