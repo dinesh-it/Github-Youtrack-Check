@@ -2,5 +2,7 @@
 *.db
 *.token
 env.sh
+.env
 *.pem
 local/**
+yt_cache/**

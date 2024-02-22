@@ -1,0 +1,30 @@
+# ========================================================================== #
+# Dinesh Dharmalingam <dinesh@exceleron.com>                                 #
+# ========================================================================== #
+
+FROM ghcr.io/exceleron/perl:latest
+
+WORKDIR /opt/task
+#COPY ./t/conf/docker/apt_preserve apt-packages.txt
+#RUN apt update && xargs apt install -y < apt-packages.txt
+
+# Cleanup image
+#COPY ./t/conf/docker/apt_preserve /usr/src/exceleron-cpan/apt-preserve.d/01_PAMS_AUTH_Preserve
+
+# Install cpan dependency modules
+WORKDIR /opt/cpan
+COPY modlist modlist
+RUN true \
+	&& cat modlist | xargs cpm install -g \
+	&& rm -rf ../cpan
+
+RUN /usr/src/exceleron-cpan/cpan-cleanup.sh \
+	&& /usr/src/exceleron-cpan/apt-cleanup.sh
+
+WORKDIR /opt/git/github-youtrack
+
+# Copy project sources
+COPY . .
+
+# ========================================================================== #
+
