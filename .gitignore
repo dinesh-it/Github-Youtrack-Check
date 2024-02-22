@@ -3,3 +3,4 @@
 *.token
 env.sh
 *.pem
+local/**
