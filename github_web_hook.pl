@@ -16,6 +16,15 @@ my $push_emitter = Mojo::EventEmitter->new;
 my $crypt        = Crypt::Lite->new(debug => 0, encoding => 'hex8');
 my $gt           = GithubToken->new(private_key_file => $ENV{GITHUB_APP_KEY_FILE}) if($ENV{GITHUB_APP_KEY_FILE});
 
+# For probe testing to check service is online
+get '/ghyt-ci' => sub {
+    my ($c) = @_;
+
+    $c->render(json => { status => 'ok', msg => 'Service online!' });
+    $c->app->log->info("Probe request received and responding success");
+    return $c->rendered(200);
+};
+
 post '/check_youtrack' => sub {
     my ($c) = @_;
 

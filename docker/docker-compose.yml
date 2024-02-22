@@ -3,9 +3,11 @@ version: '3'
 services:
   www:
     image: $DOCKER_TAG
-    container_name: micro-ci-www
+    container_name: ghyt-ci-www
     expose:
-      - 80
+      - 3000
+    ports:
+      - "3000:3000"
     environment:
       - YOUTRACK_TOKEN
       - YOUTRACK_HOST
@@ -17,15 +19,15 @@ services:
       - PR_BRANCH_YT_CHECK
       - DISABLE_CHECK_API
     command: >
-      bash -c "perl /opt/git/github-youtrack/docker/init.sh && /opt/git/github-youtrack/github_web_hook.pl daemon -m production -l http://*:80"
+      bash -c "perl /opt/git/github-youtrack/docker/init.sh && /opt/git/github-youtrack/github_web_hook.pl daemon -m production -l http://*:3000"
     networks:
-      micro-ci-nw:
+      ghyt-ci-nw:
         ipv4_address: 192.168.1.10
     volumes:
-      - run_vol_mci:/run
+      - ghyt_ci_vol:/tmp
   spooler:
     image: $DOCKER_TAG
-    container_name: micro-ci-spooler
+    container_name: ghyt-ci-spooler
     deploy:
       restart_policy:
         condition: on-failure
@@ -41,22 +43,22 @@ services:
       - PR_BRANCH_YT_CHECK
       - DISABLE_CHECK_API
     command: >
-      bash -c "perl /opt/git/github-youtrack/docker/init.sh && /opt/git/github-youtrack/check_spooler.pl"
+      bash -c "/usr/local/bin/dockerize --wait http://ghyt-ci-www:3000/ghyt-ci && /opt/git/github-youtrack/check_spooler.pl"
     networks:
-      micro-ci-nw:
+      ghyt-ci-nw:
         ipv4_address: 192.168.1.11
     volumes:
-      - run_vol_mci:/run
+      - ghyt_ci_vol:/tmp
 
 networks:
-  micro-ci-nw:
+  ghyt-ci-nw:
     driver: bridge
     ipam:
       config:
         - subnet: 192.168.1.0/24
 
 volumes:
-  run_vol_mci:
+  ghyt_ci_vol:
     driver_opts:
       type: tmpfs
       device: tmpfs

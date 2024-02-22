@@ -10,7 +10,7 @@ fi
 
 # Put file in the expected location where both server and spooler can access
 if [ ! -z "$GITHUB_APP_PRIVATE_KEY" ] ; then
-	export GITHUB_APP_KEY_FILE=/run/github_apps_youtrack-ci.2021-05-05.private-key.pem
+	export GITHUB_APP_KEY_FILE=/tmp/github_apps_youtrack-ci.2021-05-05.private-key.pem
 	echo "Creating $GITHUB_APP_KEY_FILE with key data"
 	echo "$GITHUB_APP_PRIVATE_KEY" >$GITHUB_APP_KEY_FILE
 fi

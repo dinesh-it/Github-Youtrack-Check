@@ -11,7 +11,10 @@ All the configs are read from ENV
 # Required
 export YOUTRACK_TOKEN="<youtrack_token>"
 export YOUTRACK_HOST="<youtrack_host>"
+
 export GITHUB_TOKEN="github_token"
+or
+export GITHUB_APP_KEY_FILE='./private-key.pem' (if using a github app)
 
 # Optional
 export GITHUB_SECRET="web_hook_secret"
@@ -19,7 +22,6 @@ export GITHUB_WEB_HOOK_DB="/tmp/github_web_hook.db"
 export GITHUB_WEB_HOOK_DB_USER=""
 export GITHUB_WEB_HOOK_DB_PWD=""
 export GH_WEBSOCKET_SECRET="some_secret"
-export GITHUB_APP_KEY_FILE='./private-key.pem'
 export PR_BRANCH_YT_CHECK='PRODUCTION*=CLUSTER-*'
 export DISABLE_CHECK_API=1
 ```
@@ -54,7 +56,7 @@ Server secret file path if using GIthub app (Can be generated from the app setti
 eg value: 'PRODUCTION*=CLUSTER-*' - Enables specific ticket check for PR's created against mentioned branch - check happens on the title of the PR
 
 #### DISABLE_CHECK_API=1
-If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise the github app feature, we can set the flag to disable this behaviour. Github status API will be used otherwise
+If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise the github app feature, we can set the flag to disable this behaviour. Github status API will be used otherwise. Enabling this feature will send checks API with a link to open the Github App - So if you have created an app for Authentication purpose only then its recomended to disable this feature.
 
 ## Usage
 * Install all the perl modules required using `cpanm` command
@@ -67,23 +69,31 @@ If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise 
 * Configure your Github web hook with address pointing to `http://<yourhost>:3000/check_youtrack` for `push` and `pull_request` event types.
     * Web Hook settings can be found at Github.com Repository->settings->Hooks
 * You should start seeing the request coming to your microservice on each push to github now.
-* Start youtrack check service
-`./youtrack_github_status.pl`
-
-* Start pull-commits service
-`./github_pull_commits.pl`
+* Start youtrack ticket check service/spooler
+`./check_spooler.pl`
 
 Additionally there is a helper script to force check a pull request without waiting for github web hook.
-`./add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
+`./scripts/add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
 
-Thats all, green tick marks or red cross mark will appear for each commits you push to github now.
+Thats all, green tick marks (if comment has valid ticket) or red cross mark (if commits does not have a valid youtrack ticket) will appear for each commits you push to github now.
 
 Note: Configure both services via daemon or systemd to auto restart.
 
-## Git Sync option
-* A client can subscribe (open a web socket and listen for messages) at `http://<yourhost>:3000/githubpush` path. When a push happens, it sends a single line text message with pipe seperated following format
+* To test if the service is up and running there is a probe path supported by the service - hit `http://<yourhost>:3000/ghyt-ci` and you should see json output with status 'ok' to make sure the service is running.
+
+## Git Sync Feature
+* A client can subscribe (open a web socket and listen for messages) to `ws://<yourhost>:3000/githubpush` path. When a push happens, it sends a single line text message with pipe seperated data in following format
 project|ref|latest_commit_id|last_updated|remote_url|updated_epoch
 
-* Optionally a client can send a message on the opened websocket as 'give-latest' to receive latest commits for each branch in each configured github repository
+* Optionally a client can send a message 'give-latest' on the opened websocket to receive latest commits for each branch in each configured github repository. We need to send this message when ever the client stopped and restarted to retrive all the pending actions that happened in the mean time.
 * Note: The text messages received will be encrypted with hex8 encoding using GH_WEBSOCKET_SECRET key if configured - refer Crypt::Lite for more info.
 
+* Refer: `./git-sync-client/update_git_repo.pl` and `./git-sync-client/repo_update_config.pl` - For a sample perl script client and config which utilize the Git Sync feature
+
+## Docker
+* We can run this entire application in containers using the docker compose up
+* Create a file named .env and add all the configurations env as KEY=VALUE format line by line in the project root directory
+    * Please note the Project path in container will be /opt/git/github-youtrack/
+* Start the service
+    * Run command `make run` from project root directory
+* If the configurations are correct you should see both services `ghyt-ci-www` and `ghyt-ci-spooler` services are running and last log will be `Starting recurring timers...`.
