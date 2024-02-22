@@ -14,10 +14,10 @@ docker:
 run: docker
 	docker container prune -f
 	DOCKER_TAG="$(DOCKER_TAG)" \
-	docker compose --env-file=envs -f docker/docker-compose.yml up 
+	docker compose --env-file=.env -f docker/docker-compose.yml up 
 
 .PHONY: shell
 shell: docker
 	docker container prune -f
-	docker run --rm -it --env-file=envs -v "$(PWD)/":/opt/github-youtrack/ $(DOCKER_TAG) /bin/bash
+	docker run --rm -it --env-file=.env -v "$(PWD)/":/opt/github-youtrack/ $(DOCKER_TAG) /bin/bash
 

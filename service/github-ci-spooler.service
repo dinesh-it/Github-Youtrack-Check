@@ -3,7 +3,7 @@ Description=Microservice to update status for github commits if it has valid You
 AssertFileIsExecutable=/opt/git/Github-Youtrack-Check/check_spooler.pl
 
 [Service]
-EnvironmentFile=/opt/git/Github-Youtrack-Check/envs
+EnvironmentFile=/opt/git/Github-Youtrack-Check/.env
 ExecStart=/opt/git/Github-Youtrack-Check/check_spooler.pl
 Restart=always
 

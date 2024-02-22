@@ -23,8 +23,6 @@ services:
         ipv4_address: 192.168.1.10
     volumes:
       - run_vol_mci:/run
-    env_file:
-      - ../envs
   spooler:
     image: $DOCKER_TAG
     container_name: micro-ci-spooler
@@ -49,8 +47,6 @@ services:
         ipv4_address: 192.168.1.11
     volumes:
       - run_vol_mci:/run
-    env_file:
-      - ../envs
 
 networks:
   micro-ci-nw:
