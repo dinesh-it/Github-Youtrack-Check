@@ -16,13 +16,39 @@ my $push_emitter = Mojo::EventEmitter->new;
 my $crypt        = Crypt::Lite->new(debug => 0, encoding => 'hex8');
 my $gt           = GithubToken->new(private_key_file => $ENV{GITHUB_APP_KEY_FILE}) if($ENV{GITHUB_APP_KEY_FILE});
 
+my $server_start_time = time;
+
 # For probe testing to check service is online
 get '/ghyt-ci' => sub {
     my ($c) = @_;
 
-    $c->render(json => { status => 'ok', msg => 'Service online!' });
-    $c->app->log->info("Probe request received and responding success");
-    return $c->rendered(200);
+    my $ret_code = 200;
+
+    # Check spooler status
+    my $dbh    = get_db_conn();
+    my $select = qq/SELECT * FROM SpoolerState WHERE name = 'spooler' LIMIT 1/;
+    my $result = $dbh->selectall_arrayref($select, {Slice => {}});
+
+    my $spooler_state = 'failed';
+    my $last_spool_update = time - $server_start_time;
+    if (!$result or !@{$result}) {
+        $spooler_state = "not started yet";
+    }
+    else {
+        $last_spool_update = time - $result->[0]{updated_epoch};
+    }
+
+    $spooler_state = 'ok' if($last_spool_update < 30);
+    $ret_code = '503' if(!$spooler_state eq 'ok');
+
+    $c->render(json => {
+            status => 'ok',
+            msg => 'Service online!',
+            spooler_state => $spooler_state,
+            spooler_last_update => "$last_spool_update secs ago",
+        });
+    $c->app->log->info("Probe request received and responding spooler state: '$spooler_state'");
+    return $c->rendered($ret_code);
 };
 
 post '/check_youtrack' => sub {
@@ -347,6 +373,17 @@ sub create_table_if_not_exist {
     if ($rv < 0) {
         die $DBI::errstr;
     }
+
+    $stmt = qq/
+    CREATE TABLE IF NOT EXISTS SpoolerState (name TEXT PRIMARY KEY, updated_epoch INTEGER NOT NULL);
+    /;
+
+    $rv = $dbh->do($stmt);
+    if ($rv < 0) {
+        die $DBI::errstr;
+    }
+
+    chmod 777, $ENV{GITHUB_WEB_HOOK_DB};
 }
 
 create_table_if_not_exist(get_db_conn());

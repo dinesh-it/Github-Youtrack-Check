@@ -9,15 +9,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - YOUTRACK_TOKEN
-      - YOUTRACK_HOST
       - GITHUB_TOKEN
       - GITHUB_SECRET
       - GITHUB_WEB_HOOK_DB
       - GH_WEBSOCKET_SECRET
       - GITHUB_APP_KEY_FILE
-      - PR_BRANCH_YT_CHECK
-      - DISABLE_CHECK_API
+      - GITHUB_APP_ID
+      - GITHUB_TOKEN_URL
     command: >
       bash -c "perl /opt/git/github-youtrack/docker/init.sh && /opt/git/github-youtrack/github_web_hook.pl daemon -m production -l http://*:3000"
     networks:
@@ -28,22 +26,17 @@ services:
   spooler:
     image: $DOCKER_TAG
     container_name: ghyt-ci-spooler
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 5s
     environment:
       - YOUTRACK_TOKEN
       - YOUTRACK_HOST
       - GITHUB_TOKEN
       - GITHUB_SECRET
-      - GITHUB_WEB_HOOK_DB
-      - GH_WEBSOCKET_SECRET
       - GITHUB_APP_KEY_FILE
       - PR_BRANCH_YT_CHECK
       - DISABLE_CHECK_API
     command: >
-      bash -c "/usr/local/bin/dockerize --wait http://ghyt-ci-www:3000/ghyt-ci && /opt/git/github-youtrack/check_spooler.pl"
+      bash -c "/opt/git/github-youtrack/check_spooler.pl"
+      #bash -c "/usr/local/bin/dockerize --wait http://ghyt-ci-www:3000/ghyt-ci && /opt/git/github-youtrack/check_spooler.pl"
     networks:
       ghyt-ci-nw:
         ipv4_address: 192.168.1.11

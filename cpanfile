@@ -1,0 +1,15 @@
+requires 'Crypt::Lite';
+requires 'DBI';
+requires 'DBD::SQLite';
+requires 'Digest::SHA';
+requires 'IO::Socket::SSL';
+requires 'JSON::XS';
+requires 'JSON::WebToken';
+requires 'DateTime';
+requires 'LWP::UserAgent';
+requires 'LWP::Protocol::https';
+requires 'Moose';
+requires 'Mojolicious::Lite';
+requires 'Mojo::EventEmitter';
+requires 'URI::Builder';
+requires 'Crypt::OpenSSL::RSA';
