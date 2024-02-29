@@ -9,7 +9,7 @@ use JSON::XS;
 
 use FindBin;
 use lib $FindBin::Bin;
-use GithubToken;
+use Github;
 
 # Check of required ENV's available
 if (!$ENV{GITHUB_TOKEN}) {
@@ -18,7 +18,7 @@ if (!$ENV{GITHUB_TOKEN}) {
 
 my $gt;
 if($ENV{GITHUB_APP_KEY_FILE}) {
-    $gt = GithubToken->new(
+    $gt = Github->new(
         private_key_file => $ENV{GITHUB_APP_KEY_FILE},
     );
 

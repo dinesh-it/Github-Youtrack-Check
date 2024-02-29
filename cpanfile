@@ -13,3 +13,4 @@ requires 'Mojolicious::Lite';
 requires 'Mojo::EventEmitter';
 requires 'URI::Builder';
 requires 'Crypt::OpenSSL::RSA';
+requires 'Log::Handler';

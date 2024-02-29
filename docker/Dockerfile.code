@@ -30,5 +30,9 @@ WORKDIR /opt/git/github-youtrack
 # Copy project sources
 COPY . .
 
+ENTRYPOINT ["bash", "-c"]
+
+CMD ["/opt/git/github-youtrack/docker/server.sh"]
+
 # ========================================================================== #
 

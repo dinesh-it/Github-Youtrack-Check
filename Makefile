@@ -13,8 +13,8 @@ docker:
 .PHONY: run
 run: docker
 	docker container prune -f
-	DOCKER_TAG="$(DOCKER_TAG)" \
-	docker compose --env-file=.env -f docker/docker-compose.yml up 
+	echo $(DOCKER_TAG)
+	docker run --rm -it --env-file=.env $(DOCKER_TAG)
 
 .PHONY: shell
 shell: docker

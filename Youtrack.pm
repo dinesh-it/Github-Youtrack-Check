@@ -25,6 +25,24 @@ has youtrack_match_key => (
     is => 'rw',
 );
 
+# ============================================================================ #
+
+has 'logger' => ( is => 'rw', default => sub {
+        require 'Log::Handler';
+        my $log = Log::Handler->new(
+            screen => {
+                log_to   => "STDOUT",
+                maxlevel => "debug",
+                minlevel => "debug",
+                message_layout => "%T [%L] %m",
+            }
+        );
+
+        return $log;
+    });
+
+# ============================================================================ #
+
 has ua => (
     is => 'rw',
     default => sub {
@@ -72,7 +90,7 @@ sub create_ticket {
     my $ticket = $ua->post($url, fields => 'numberInProject', Content => encode_json($data) );
 
     if(!$ticket->is_success) {
-        print "ERROR: Creating ticket " . $ticket->status_line . "\n";
+        $self->logger->error("Creating ticket " . $ticket->status_line);
         return;
     }
 
@@ -118,7 +136,7 @@ sub get_ticket_id {
 sub get_projects {
     my $self = shift;
 
-    print "Getting projects list from youtrack\n";
+    $self->logger->info("Getting projects list from youtrack");
 
     my $ua = $self->ua;
     my $yt = $self->_get_api_path('admin', 'projects');
@@ -126,7 +144,7 @@ sub get_projects {
     my $res = $ua->get($yt . '?fields=shortName');
 
     if(!$res->is_success) {
-        print "ERROR: Status - " . $res->status_line . "\n";
+        $self->logger->error("Status - " . $res->status_line);
         die "Failed to get project ID's\n";
     }
 
@@ -165,7 +183,7 @@ sub get_ticket_match_key {
     }
 
     my $reg_ex = '((?:' . join('|', @proj_codes) . ')-\d+)';
-    print "Ticket match key: $reg_ex\n";
+    $self->logger->info("Ticket match key: $reg_ex");
 
     $self->match_key_last_tried(time);
     $self->youtrack_match_key($reg_ex);
@@ -194,8 +212,8 @@ sub get_ticket {
 
     if (!$ticket->is_success) {
         my $status_code = $ticket->code;
-        print STDERR "YouTrack request Error: $status_code :" . $ticket->status_line . "\n";
-        print STDERR "Failed URL: $url\n";
+        $self->log->error("YouTrack request Error: $status_code :" . $ticket->status_line);
+        $self->log->error("Failed URL: $url");
         die "Please check the token\n" if ($status_code == 401);
 
         if($status_code == 502) {
@@ -203,7 +221,7 @@ sub get_ticket {
         }
 
         if ($status_code == 408 || $status_code == 503 || $ticket->status_line =~ /Can't connect to/i || $ticket->status_line =~ /Time-out/i) {
-            print "$url will be retried again\n";
+            $self->logger->info("$url will be retried again");
             return { Link => "WAIT" }; 
         }
 
@@ -238,7 +256,7 @@ sub add_pr_link_to_comment {
             push (@ci_comments, $c);
         }
         elsif($c->{text} =~ /$pr_link/g) {
-            #print "PR mentioned by user on $ticket_id\n";
+            #$self->logger->info("PR mentioned by user on $ticket_id");
             $comments_added->{"$ticket_id-$pr_link"} = 1;
             return;
         }
@@ -255,7 +273,7 @@ sub add_pr_link_to_comment {
     }
 
     if(!$update_required) {
-        #print "PR already mentioned on $ticket_id\n";
+        #$self->logger->info("PR already mentioned on $ticket_id");
         $comments_added->{"$ticket_id-$pr_link"} = 1;
         return;
     }
@@ -263,7 +281,7 @@ sub add_pr_link_to_comment {
     $comment_text .= "\n$pr_link";
 
     if($self->add_update_comment($comment_text, $ticket_id, $comment_id)) {
-        #print "Youtrack comment added/updated successfully on ticket $ticket_id\n";
+        #$self->logger->info("Youtrack comment added/updated successfully on ticket $ticket_id");
         $comments_added->{"$ticket_id-$pr_link"} = 1;
     }
 }
@@ -292,7 +310,7 @@ sub add_update_comment {
     my $ticket = $ua->post($url, fields => 'id,author,text', Content => encode_json($body) );
 
     if (!$ticket->is_success) {
-        print "Failed! " . $ticket->status_line  . "\n";
+        $self->logger->error("Failed! " . $ticket->status_line);
         return;
     }
 
@@ -313,7 +331,7 @@ sub get_ticket_comments {
     my $ticket = $ua->get($url);
 
     if (!$ticket->is_success) {
-        print "Failed! " . $ticket->status_line  . "\n";
+        $self->logger->error("Failed! " . $ticket->status_line);
         return;
     }
 
