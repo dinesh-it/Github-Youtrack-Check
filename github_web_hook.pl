@@ -629,13 +629,13 @@ sub add_pending_commits {
         my $url = $branch->{commit}{url};
         #print "Updating commit status: $ref,$sha\n";
 
-        update_repo_state({
-                project => $repo,
-                ref => $ref,
-                latest_commit_id => $sha,
-                last_updated => DateTime->now,
-                remote_url => $url,
-            });
+        $push_emitter->emit('push' => update_repo_state({
+                    project => $repo,
+                    ref => $ref,
+                    latest_commit_id => $sha,
+                    last_updated => DateTime->now,
+                    remote_url => $url,
+                }));
     }
 }
 
