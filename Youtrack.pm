@@ -3,6 +3,7 @@ package Youtrack;
 use Moose;
 use LWP::UserAgent;
 use JSON qw/decode_json encode_json/;
+use URI::Builder;
 
 has api_token => (
     is => 'rw',
@@ -28,7 +29,7 @@ has youtrack_match_key => (
 # ============================================================================ #
 
 has 'logger' => ( is => 'rw', default => sub {
-        require 'Log::Handler';
+        require Log::Handler;
         my $log = Log::Handler->new(
             screen => {
                 log_to   => "STDOUT",
@@ -296,7 +297,7 @@ sub add_update_comment {
     my $ua = $self->ua;
     my $ticket_fields = 'fields=id,author,text';
 
-    my @path_seg = ("youtrack", "api", "issues", $ticket_id, "comments");
+    my @path_seg = ("issues", $ticket_id, "comments");
     push(@path_seg, $comment_id) if($comment_id);
 
     my $yt_link = $self->_get_api_path(@path_seg);

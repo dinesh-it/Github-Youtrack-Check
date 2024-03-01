@@ -28,7 +28,7 @@ has 'read_only_token_expiry' => ( is => 'rw' );
 # ============================================================================ #
 
 has 'logger' => ( is => 'rw', default => sub {
-        require 'Log::Handler';
+        require Log::Handler;
         my $log = Log::Handler->new(
             screen => {
                 log_to   => "STDOUT",
@@ -43,20 +43,15 @@ has 'logger' => ( is => 'rw', default => sub {
 
 # ============================================================================ #
 
-has 'ua' => (
-    is => 'rw',
-    default => sub {
-        my $self = shift;
-        my $gh_token = $self->get_access_token;
-        my $ua = LWP::UserAgent->new;
-        $ua->default_header('Authorization' => "Bearer $gh_token");
-        $ua->default_header('Accept'        => 'application/json');
-        $ua->default_header('Content-Type'  => 'application/json');
-        return $ua;
-
-    },
-    lazy => 1,
-);
+sub ua {
+    my ($self) = @_;
+    my $gh_token = $self->get_access_token;
+    my $ua = LWP::UserAgent->new;
+    $ua->default_header('Authorization' => "Bearer $gh_token");
+    $ua->default_header('Accept'        => 'application/json');
+    $ua->default_header('Content-Type'  => 'application/json');
+    return $ua;
+}
 
 # ============================================================================ #
 
@@ -79,6 +74,13 @@ sub get_access_token {
         }
     }
 
+    return $self->refresh_app_token;
+}
+
+# ============================================================================ #
+
+sub refresh_app_token {
+    my $self = shift;
     my $get_token_url = $self->_get_key('access_token_url');
 
     my $ua = LWP::UserAgent->new();
@@ -358,7 +360,6 @@ sub get_read_only_access_token {
     my $json_resp = decode_json($res->decoded_content);
 
     $self->read_only_token($json_resp->{token});
-    $self->logger->info("NEW RO TOKEN: " . $self->read_only_token);
     $self->read_only_token_expiry(str2time($json_resp->{expires_at}));
 
     return $self->read_only_token;
@@ -413,8 +414,6 @@ sub read_file {
         $self->access_token_url($ENV{GITHUB_TOKEN_URL});
         return;
     }
-
-    return unless(-f $self->token_file);
 
     my $last_modified = (stat $self->token_file)[9];
     if($self->token_last_modified and $self->token_last_modified eq $last_modified) {
