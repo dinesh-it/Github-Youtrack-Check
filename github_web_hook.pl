@@ -285,7 +285,7 @@ sub send_stat {
         $log->debug("Encrypting: $ev_str");
         $ev_str = $crypt->encrypt($ev_str, $ENV{GH_WEBSOCKET_SECRET});
     }
-    $log->info("Sending: $ev_str");
+    #$log->debug("Sending: $ev_str");
     $c->send("$ev_str");
 }
 

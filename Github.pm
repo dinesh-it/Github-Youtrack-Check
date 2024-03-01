@@ -90,7 +90,7 @@ sub get_access_token {
 
     if (!$res->is_success) {
         my $res_code = $res->code;
-        $self->log->error("$res_code, for URL: $get_token_url");
+        $self->logger->error("$res_code, for URL: $get_token_url");
         return;
     }
 
@@ -252,8 +252,8 @@ sub post_github_status {
     my $res_code = $res->code;
 
     if (!$res->is_success) {
-        $self->log->error("Error updating status for: $gh_url");
-        $self->log->error($res->decoded_content);
+        $self->logger->error("Error updating status for: $gh_url");
+        $self->logger->error($res->decoded_content);
 
         # Re-try only if the request timed out or internet issue
         if ($res_code != 408 and $res->status_line !~ /Can't connect to/i) {
@@ -312,8 +312,8 @@ sub post_github_check {
     my $res_code = $res->code;
 
     if (!$res->is_success) {
-        $self->log->error("Error updating status for: $gh_url");
-        $self->log->error($res->decoded_content);
+        $self->logger->error("Error updating status for: $gh_url");
+        $self->logger->error($res->decoded_content);
 
         # Re-try only if the request timed out or internet issue
         if ($res_code != 408 and $res->status_line !~ /Can't connect to/i) {
@@ -351,7 +351,7 @@ sub get_read_only_access_token {
 
     if (!$res->is_success) {
         my $res_code = $res->code;
-        $self->log->error("$res_code, for URL: $get_token_url");
+        $self->logger->error("$res_code, for URL: $get_token_url");
         return undef;
     }
 
