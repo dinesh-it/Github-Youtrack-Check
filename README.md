@@ -62,22 +62,20 @@ If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise 
 * Install all the perl modules required using `cpanm` command
 `cpanm <modlist`
 
-* Start github web hook listener
-`./github_web_hook.pl daemon -l https://*:3000`
+* Start github web hook listener and spool service
+`github_web_hook.pl daemon -m production -l http://*:3000`
 
 * Now a micro service to listen for github web hook is ready at your server on port 3000.
 * Configure your Github web hook with address pointing to `http://<yourhost>:3000/check_youtrack` for `push` and `pull_request` event types.
     * Web Hook settings can be found at Github.com Repository->settings->Hooks
 * You should start seeing the request coming to your microservice on each push to github now.
-* Start youtrack ticket check service/spooler
-`./check_spooler.pl`
 
 Additionally there is a helper script to force check a pull request without waiting for github web hook.
 `./scripts/add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
 
 Thats all, green tick marks (if comment has valid ticket) or red cross mark (if commits does not have a valid youtrack ticket) will appear for each commits you push to github now.
 
-Note: Configure both services via daemon or systemd to auto restart.
+Note: Configure the service via daemon or systemd to auto restart on exception.
 
 * To test if the service is up and running there is a probe path supported by the service - hit `http://<yourhost>:3000/ghyt-ci` and you should see json output with status 'ok' to make sure the service is running.
 
@@ -86,14 +84,16 @@ Note: Configure both services via daemon or systemd to auto restart.
 project|ref|latest_commit_id|last_updated|remote_url|updated_epoch
 
 * Optionally a client can send a message 'give-latest' on the opened websocket to receive latest commits for each branch in each configured github repository. We need to send this message when ever the client stopped and restarted to retrive all the pending actions that happened in the mean time.
+
 * Note: The text messages received will be encrypted with hex8 encoding using GH_WEBSOCKET_SECRET key if configured - refer Crypt::Lite for more info.
 
-* Refer: `./git-sync-client/update_git_repo.pl` and `./git-sync-client/repo_update_config.pl` - For a sample perl script client and config which utilize the Git Sync feature
+* Refer: `./git-sync-client/update_git_repo.pl` and `./git-sync-client/repo_update_config.pl` - For a sample perl client and config file which utilize the Git Sync feature
 
 ## Docker
-* We can run this entire application in containers using the docker compose up
+* We can run this application in container using docker
 * Create a file named .env and add all the configurations env as KEY=VALUE format line by line in the project root directory
     * Please note the Project path in container will be /opt/git/github-youtrack/
 * Start the service
     * Run command `make run` from project root directory
-* If the configurations are correct you should see both services `ghyt-ci-www` and `ghyt-ci-spooler` services are running and last log will be `Starting recurring timers...`.
+* If the configurations are correct you should see `Web application available at http://127.0.0.1:80` message and now you can hit `http://127.0.0.1/ghyt-ci` which responds with service status
+

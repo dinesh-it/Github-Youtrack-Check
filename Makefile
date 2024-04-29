@@ -14,7 +14,7 @@ docker:
 run: docker
 	docker container prune -f
 	echo $(DOCKER_TAG)
-	docker run --rm -it --env-file=.env $(DOCKER_TAG)
+	docker run --rm -it --env-file=.env -p 80:80 $(DOCKER_TAG)
 
 .PHONY: shell
 shell: docker
