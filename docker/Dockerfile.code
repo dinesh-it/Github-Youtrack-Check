@@ -30,6 +30,9 @@ WORKDIR /opt/git/github-youtrack
 # Copy project sources
 COPY . .
 
+# When running in lambda we need permissions for any user
+RUN chmod 644 $(find /opt -type f) && chmod 755 $(find /opt -type d) && chmod 777 /opt/git/github-youtrack/docker/server.sh
+
 ENTRYPOINT ["bash", "-c"]
 
 CMD ["/opt/git/github-youtrack/docker/server.sh"]

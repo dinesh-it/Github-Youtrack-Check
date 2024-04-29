@@ -213,8 +213,8 @@ sub get_ticket {
 
     if (!$ticket->is_success) {
         my $status_code = $ticket->code;
-        $self->log->error("YouTrack request Error: $status_code :" . $ticket->status_line);
-        $self->log->error("Failed URL: $url");
+        $self->logger->error("YouTrack request Error: $status_code :" . $ticket->status_line);
+        $self->logger->error("Failed URL: $url");
         die "Please check the token\n" if ($status_code == 401);
 
         if($status_code == 502) {

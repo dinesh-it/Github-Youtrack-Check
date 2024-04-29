@@ -12,6 +12,8 @@ use HTTP::Date;
 use Fcntl qw(:flock);
 use URI::Builder;
 use Data::Dumper;
+use Encode;
+use utf8;
 
 has 'private_key_file' => ( is => 'ro', required => 1 );
 has 'private_key' => (is => 'rw');
@@ -217,9 +219,11 @@ sub post_github_status {
 
     my $ua = $self->ua;
 
+    my $desc = decode( 'UTF-8', $commit->{desc} =~ s/[^\x00-\x7F]+/?/gr );
+
     my $resp_body = {
         "context"     => "ci/chk-youtrack",
-        "description" => $commit->{desc},
+        "description" => $desc,
         "state"       => $status,
     };
 
