@@ -274,8 +274,18 @@ sub send_stat {
     my $git_url = $s->{remote_url};
     if($s->{token}) {
         # Send remote URL with access_token
-        $git_url =~ s/^git\@github.com://;
         my $r = 'https://x-access-token:' . $s->{token} . '@github.com';
+
+        # For commits URL that contains https version
+        if ($git_url =~ /^https:\/\//) {
+            $git_url =~ s/https:\/\/.+\/repos\///;
+            $git_url =~ s/\/commits\/.+//;
+            $git_url = "$git_url.git";
+        }
+        else {
+            $git_url =~ s/^git\@github.com://;
+        }
+
         $git_url = "$r/$git_url";
     }
 
