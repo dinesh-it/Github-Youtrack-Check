@@ -479,7 +479,7 @@ sub create_table_if_not_exist {
         die $DBI::errstr;
     }
 
-    chmod 777, $ENV{GITHUB_WEB_HOOK_DB};
+    chmod 0640, $ENV{GITHUB_WEB_HOOK_DB};
 }
 
 # ============================================================================ #
