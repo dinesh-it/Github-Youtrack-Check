@@ -1,12 +1,19 @@
 [Unit]
-Description=Microserver for listening github webhooks and updated local database
+Description=Micro service checking github commits / pull requests for youtrack tickets and serving git sync clients
 AssertFileIsExecutable=/opt/git/Github-Youtrack-Check/github_web_hook.pl
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
+# Keep this file readable only by root, it holds the secrets
 EnvironmentFile=/opt/git/Github-Youtrack-Check/.env
 ExecStart=/opt/git/Github-Youtrack-Check/github_web_hook.pl daemon -m production -l http://*:80
 Restart=always
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
-WantedBy=github-youtrack-status-update.service github-pull-commits.service multi-user.target
+WantedBy=multi-user.target

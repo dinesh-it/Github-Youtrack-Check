@@ -1,0 +1,10 @@
+# Whitelist: only sources and tests go into the test image.
+# Keeps .env, envs, *.pem, token, db and local config files out of the build context.
+*
+!cpanfile
+!*.pm
+!github_web_hook.pl
+!scripts/*.pl
+!git-sync-client/update_git_repo.pl
+!git-sync-client/repo_update_config.pl
+!t/
