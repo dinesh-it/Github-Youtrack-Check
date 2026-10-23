@@ -4,7 +4,7 @@ use Test::More;
 use MIME::Base64 qw(encode_base64url decode_base64url);
 
 use FindBin;
-use lib "$FindBin::Bin/..";
+use lib "$FindBin::Bin/../lib";
 use SecureChannel;
 
 my $secret = 'a' x 64;

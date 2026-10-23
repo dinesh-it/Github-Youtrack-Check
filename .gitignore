@@ -7,5 +7,6 @@ env.sh
 envs
 *.pem
 *.local.pl
-local/**
+local/*
+!local/.keep
 yt_cache/**

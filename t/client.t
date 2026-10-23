@@ -9,7 +9,7 @@ use Digest::SHA qw(hmac_sha256_hex);
 use Crypt::OpenSSL::RSA;
 
 use FindBin;
-use lib "$FindBin::Bin/..", "$FindBin::Bin/lib";
+use lib "$FindBin::Bin/../lib", "$FindBin::Bin/lib";
 use MockApi;
 
 plan skip_all => 'git is required' if (system('git --version >/dev/null 2>&1') != 0);

@@ -14,7 +14,7 @@ use Digest::SHA qw(hmac_sha256_hex);
 use HTTP::Date qw(str2time);
 
 use FindBin;
-use lib $FindBin::Bin;
+use lib "$FindBin::Bin/lib";
 use Github;
 use Youtrack;
 use Store;

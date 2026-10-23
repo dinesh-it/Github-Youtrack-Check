@@ -2,7 +2,7 @@
 # Keeps .env, envs, *.pem, token, db and local config files out of the build context.
 *
 !cpanfile
-!*.pm
+!lib/
 !github_web_hook.pl
 !scripts/*.pl
 !git-sync-client/update_git_repo.pl

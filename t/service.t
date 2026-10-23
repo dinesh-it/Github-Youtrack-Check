@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use Crypt::OpenSSL::RSA;
 
 use FindBin;
-use lib "$FindBin::Bin/..", "$FindBin::Bin/lib";
+use lib "$FindBin::Bin/../lib", "$FindBin::Bin/lib";
 use MockApi;
 use SecureChannel;
 
