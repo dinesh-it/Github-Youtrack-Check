@@ -2,70 +2,135 @@ package Youtrack;
 
 use Moose;
 use LWP::UserAgent;
-use JSON qw/decode_json encode_json/;
-use URI::Builder;
+use JSON::XS qw/decode_json encode_json/;
+use URI;
 
 has api_token => (
-    is => 'rw',
-    default => sub { $ENV{YOUTRACK_TOKEN} },
+    is       => 'rw',
+    default  => sub { $ENV{YOUTRACK_TOKEN} },
     required => 1,
 );
 
 has api_host => (
-    is => 'rw',
-    default => sub { $ENV{YOUTRACK_HOST} },
+    is       => 'rw',
+    default  => sub { ($ENV{YOUTRACK_HOST} // '') =~ s{/+$}{}r },
     required => 1,
 );
 
+# Login of the user owning YOUTRACK_TOKEN, used to find our own comments
+has ci_login => (
+    is      => 'rw',
+    default => sub { $ENV{YOUTRACK_CI_LOGIN} || 'ci' },
+);
+
+has timeout => (
+    is      => 'ro',
+    default => sub { $ENV{HTTP_TIMEOUT} || 20 },
+);
+
 has match_key_last_tried => (
-    is => 'rw',
+    is      => 'rw',
     default => sub { 0 },
 );
 
-has youtrack_match_key => (
-    is => 'rw',
+has youtrack_match_key => (is => 'rw');
+
+has ticket_cache_ttl => (
+    is      => 'ro',
+    default => sub { 6 * 3600 },
 );
 
 # ============================================================================ #
 
-has 'logger' => ( is => 'rw', default => sub {
+has 'logger' => (
+    is      => 'rw',
+    default => sub {
         require Log::Handler;
-        my $log = Log::Handler->new(
+        return Log::Handler->new(
             screen => {
-                log_to   => "STDOUT",
-                maxlevel => "debug",
-                minlevel => "debug",
+                log_to         => "STDOUT",
+                maxlevel       => "info",
+                minlevel       => "emerg",
                 message_layout => "%T [%L] %m",
             }
         );
-
-        return $log;
-    });
+    }
+);
 
 # ============================================================================ #
 
 has ua => (
-    is => 'rw',
+    is      => 'rw',
+    lazy    => 1,
     default => sub {
         my $self = shift;
-        my $ua = LWP::UserAgent->new();
+        my $ua   = LWP::UserAgent->new(timeout => $self->timeout, agent => 'micro-ci-chk-youtrack/2');
         $ua->default_header('Authorization' => "Bearer " . $self->api_token);
         $ua->default_header('Accept'        => 'application/json');
         $ua->default_header('Content-Type'  => 'application/json');
+
+        # Never send the token outside the youtrack host, including on redirects
+        my $base = $self->api_host . '/';
+        $ua->add_handler(
+            request_prepare => sub {
+                my ($req) = @_;
+                $req->remove_header('Authorization') if (index($req->uri->as_string, $base) != 0);
+                return;
+            }
+        );
+
         return $ua;
     },
-    lazy => 1,
 );
 
 # ============================================================================ #
 
 sub _get_api_path {
     my ($self, @path_parts) = @_;
-    my $host = $self->api_host;
-
-    my $yt = URI::Builder->new(uri => $host);
+    my $yt = URI->new($self->api_host);
     $yt->path_segments('youtrack', 'api', @path_parts);
-    $yt->as_string;
+    return $yt->as_string;
+}
+
+# ============================================================================ #
+
+sub _is_temporary_failure {
+    my ($self, $res) = @_;
+    my $code = $res->code;
+    return 1 if (($res->header('Client-Warning') // '') eq 'Internal response');
+    return 1 if ($code == 408 or $code == 429 or $code >= 500);
+    return 0;
+}
+
+# ============================================================================ #
+
+# GET a collection page by page, returns array ref or undef on failure
+sub _get_collection {
+    my ($self, $url, $fields) = @_;
+
+    my $top  = 100;
+    my $skip = 0;
+    my @all;
+
+    for (1 .. 100) {
+        my $uri = URI->new($url);
+        $uri->query_form(fields => $fields, '$top' => $top, '$skip' => $skip);
+
+        my $res = $self->ua->get($uri->as_string);
+        if (!$res->is_success) {
+            $self->logger->error("YouTrack request failed: " . $res->status_line . " for URL: $url");
+            return;
+        }
+
+        my $page = eval { decode_json($res->decoded_content) };
+        return if (ref($page) ne 'ARRAY');
+
+        push(@all, @{$page});
+        last if (@{$page} < $top);
+        $skip += $top;
+    }
+
+    return \@all;
 }
 
 # ============================================================================ #
@@ -76,21 +141,17 @@ sub _get_api_path {
 # as arguments
 sub create_ticket {
     my ($self, $proj_id, $summary, $desc) = @_;
-    my $url = $self->_get_api_path('issues');
-    $url .= '?fields=numberInProject';
-    my $ua = $self->ua;
+    my $url = $self->_get_api_path('issues') . '?fields=numberInProject';
 
     my $data = {
-        project => {
-            id => $proj_id,
-        },
-        summary => $summary,
+        project     => {id => $proj_id},
+        summary     => $summary,
         description => $desc,
     };
 
-    my $ticket = $ua->post($url, fields => 'numberInProject', Content => encode_json($data) );
+    my $ticket = $self->ua->post($url, Content => encode_json($data));
 
-    if(!$ticket->is_success) {
+    if (!$ticket->is_success) {
         $self->logger->error("Creating ticket " . $ticket->status_line);
         return;
     }
@@ -102,11 +163,9 @@ sub create_ticket {
 
 sub get_ticket_link {
     my ($self, $ticket_id) = @_;
-    my $host = $self->api_host;
-
-    my $yt = URI::Builder->new(uri => $host);
+    my $yt = URI->new($self->api_host);
     $yt->path_segments('youtrack', 'issue', $ticket_id);
-    $yt->as_string;
+    return $yt->as_string;
 }
 
 # ============================================================================ #
@@ -114,17 +173,19 @@ sub get_ticket_link {
 sub get_ticket_id {
     my ($self, $message) = @_;
 
+    return if (!defined $message);
+
     my $youtrack_match_key = $self->get_ticket_match_key;
 
-    if ($message =~ /$youtrack_match_key/i) {
+    if ($youtrack_match_key and $message =~ /$youtrack_match_key/i) {
         return uc($1);
     }
 
     # Probably new project added so lets update our list and try one more time
-    if($message =~ /[A-Z0-9]-\d+/) {
+    if ($message =~ /[A-Z0-9]-\d+/i) {
         $youtrack_match_key = $self->get_ticket_match_key(1);
 
-        if ($message =~ /$youtrack_match_key/i) {
+        if ($youtrack_match_key and $message =~ /$youtrack_match_key/i) {
             return uc($1);
         }
     }
@@ -139,54 +200,50 @@ sub get_projects {
 
     $self->logger->info("Getting projects list from youtrack");
 
-    my $ua = $self->ua;
-    my $yt = $self->_get_api_path('admin', 'projects');
+    my $projects = $self->_get_collection($self->_get_api_path('admin', 'projects'), 'shortName');
+    die "Failed to get youtrack project list\n" if (!$projects);
 
-    my $res = $ua->get($yt . '?fields=shortName');
-
-    if(!$res->is_success) {
-        $self->logger->error("Status - " . $res->status_line);
-        die "Failed to get project ID's\n";
-    }
-
-    return decode_json($res->decoded_content);
+    return $projects;
 }
 
 # ============================================================================ #
 
 sub get_ticket_match_key {
-    my ($self, $fetch_new) = shift;
+    my ($self, $fetch_new) = @_;
 
-    my $match_key_last_tried = $self->match_key_last_tried;
     my $youtrack_match_key = $self->youtrack_match_key;
 
-    if(!$fetch_new and $youtrack_match_key) {
+    if (!$fetch_new and $youtrack_match_key) {
         return $youtrack_match_key;
     }
 
     # Avoid trying again and again in a loop - try again only after 5 mins
-    if($match_key_last_tried and $match_key_last_tried > (time - (60 * 5))) {
+    if ($youtrack_match_key and $self->match_key_last_tried > (time - (60 * 5))) {
         return $youtrack_match_key;
     }
 
-    my $projects = $self->get_projects();
+    $self->match_key_last_tried(time);
 
-    # Build reg ex
-    # eg: ((?:P3|P2|MA|DSP|OPS)-\d+)
-
-    my @proj_codes;
-    foreach (@{$projects}) {
-        push(@proj_codes, $_->{shortName});
+    my $projects = eval { $self->get_projects() };
+    if (!$projects) {
+        # Keep using the old list when youtrack is not reachable
+        return $youtrack_match_key if ($youtrack_match_key);
+        die $@ || "Failed to fetch youtrack projects\n";
     }
 
-    if(!@proj_codes) {
+    # Build reg ex, longest codes first
+    # eg: ((?:CLUSTER|DSP|OPS|P3|MA)-\d+)
+    my @proj_codes = sort { length($b) <=> length($a) or $a cmp $b }
+      grep { defined and length } map { $_->{shortName} } @{$projects};
+
+    if (!@proj_codes) {
+        return $youtrack_match_key if ($youtrack_match_key);
         die "ERROR: Failed to fetch project details, empty list received!\n";
     }
 
-    my $reg_ex = '((?:' . join('|', @proj_codes) . ')-\d+)';
+    my $reg_ex = '((?:' . join('|', map { quotemeta } @proj_codes) . ')-\d+)';
     $self->logger->info("Ticket match key: $reg_ex");
 
-    $self->match_key_last_tried(time);
     $self->youtrack_match_key($reg_ex);
 
     return $reg_ex;
@@ -195,95 +252,99 @@ sub get_ticket_match_key {
 # ============================================================================ #
 
 my $verified_tickets = {};
+
+# Returns the ticket hash, undef if the ticket does not exist or
+# { Link => 'WAIT' } if youtrack is temporarily not available
 sub get_ticket {
     my ($self, $ticket_id) = @_;
 
     return if (!$ticket_id);
 
-    if (exists $verified_tickets->{$ticket_id}) {
-        return $verified_tickets->{$ticket_id};
+    my $cached = $verified_tickets->{$ticket_id};
+    if ($cached and $cached->{_cached_at} > time - $self->ticket_cache_ttl) {
+        return $cached;
     }
 
-    my $ua = $self->ua;
-    my $yt_link = $self->_get_api_path('issues', $ticket_id);
-    my $ticket_fields = 'fields=numberInProject,summary';
-    my $url = $yt_link . "?$ticket_fields";
-
-    my $ticket = $ua->get($url);
+    my $url    = $self->_get_api_path('issues', $ticket_id) . '?fields=idReadable,numberInProject,summary';
+    my $ticket = $self->ua->get($url);
 
     if (!$ticket->is_success) {
         my $status_code = $ticket->code;
-        $self->logger->error("YouTrack request Error: $status_code :" . $ticket->status_line);
-        $self->logger->error("Failed URL: $url");
-        die "Please check the token\n" if ($status_code == 401);
+        $self->logger->error("YouTrack request Error: " . $ticket->status_line . " Failed URL: $url");
+        die "YouTrack token is invalid or expired, please check YOUTRACK_TOKEN\n" if ($status_code == 401);
 
-        if($status_code == 502) {
-            die "Received 502, lets die and see if it works after the service restart\n";
-        }
-
-        if ($status_code == 408 || $status_code == 503 || $ticket->status_line =~ /Can't connect to/i || $ticket->status_line =~ /Time-out/i) {
+        if ($self->_is_temporary_failure($ticket)) {
             $self->logger->info("$url will be retried again");
-            return { Link => "WAIT" }; 
+            return {Link => "WAIT"};
         }
 
         delete $verified_tickets->{$ticket_id};
         return;
     }
 
-    my $ticket_link = $self->get_ticket_link($ticket_id);
-    $verified_tickets->{$ticket_id} = decode_json($ticket->decoded_content);
-    $verified_tickets->{$ticket_id}->{Link} = $ticket_link;
+    my $data = eval { decode_json($ticket->decoded_content) };
+    if (ref($data) ne 'HASH') {
+        $self->logger->error("Invalid youtrack response for $url, will be retried");
+        return {Link => "WAIT"};
+    }
 
-    return $verified_tickets->{$ticket_id};
+    $data->{Link}       = $self->get_ticket_link($ticket_id);
+    $data->{_cached_at} = time;
+    $verified_tickets->{$ticket_id} = $data;
+
+    return $data;
 }
 
 # ============================================================================ #
 
 my $comments_added = {};
+
 sub add_pr_link_to_comment {
     my ($self, $ticket_id, $pr_link) = @_;
 
-    return if(!$pr_link);
+    return if (!$pr_link or !$ticket_id);
 
-    return if($comments_added->{"$ticket_id-$pr_link"});
+    my $cache_key = "$ticket_id-$pr_link";
+    return if ($comments_added->{$cache_key});
 
     my $comments = $self->get_ticket_comments($ticket_id);
+    return if (!$comments);
+
+    # Exact link match, so pull/12 is not considered present because of pull/123
+    my $link_re = qr/\Q$pr_link\E(?!\d)/;
+
     my @ci_comments;
-
     foreach my $c (@{$comments}) {
-        next if($c->{deleted});
+        next if ($c->{deleted});
 
-        if($c->{author}->{login} eq 'ci') {
-            push (@ci_comments, $c);
+        my $login = ($c->{author} // {})->{login} // '';
+        if ($login eq $self->ci_login) {
+            push(@ci_comments, $c);
         }
-        elsif($c->{text} =~ /$pr_link/g) {
-            #$self->logger->info("PR mentioned by user on $ticket_id");
-            $comments_added->{"$ticket_id-$pr_link"} = 1;
+        elsif (($c->{text} // '') =~ $link_re) {
+            $comments_added->{$cache_key} = 1;
             return;
         }
     }
 
-    my $comment = $ci_comments[-1];
+    my $comment      = $ci_comments[-1];
     my $comment_text = 'Pull Request(s) - Github commit mentions';
     my $comment_id;
-    my $update_required = 1;
-    if ($comment && $comment->{id}) {
-        $comment_id = $comment->{id};
-        $comment_text = $comment->{text};
-        $update_required = 0 if($comment_text =~ /$pr_link/g);
-    }
 
-    if(!$update_required) {
-        #$self->logger->info("PR already mentioned on $ticket_id");
-        $comments_added->{"$ticket_id-$pr_link"} = 1;
-        return;
+    if ($comment && $comment->{id}) {
+        $comment_id   = $comment->{id};
+        $comment_text = $comment->{text} // $comment_text;
+
+        if ($comment_text =~ $link_re) {
+            $comments_added->{$cache_key} = 1;
+            return;
+        }
     }
 
     $comment_text .= "\n$pr_link";
 
-    if($self->add_update_comment($comment_text, $ticket_id, $comment_id)) {
-        #$self->logger->info("Youtrack comment added/updated successfully on ticket $ticket_id");
-        $comments_added->{"$ticket_id-$pr_link"} = 1;
+    if ($self->add_update_comment($comment_text, $ticket_id, $comment_id)) {
+        $comments_added->{$cache_key} = 1;
     }
 }
 
@@ -294,24 +355,15 @@ sub add_pr_link_to_comment {
 sub add_update_comment {
     my ($self, $comment_text, $ticket_id, $comment_id) = @_;
 
-    my $ua = $self->ua;
-    my $ticket_fields = 'fields=id,author,text';
-
     my @path_seg = ("issues", $ticket_id, "comments");
-    push(@path_seg, $comment_id) if($comment_id);
+    push(@path_seg, $comment_id) if ($comment_id);
 
-    my $yt_link = $self->_get_api_path(@path_seg);
+    my $url = $self->_get_api_path(@path_seg) . '?fields=id,author,text';
 
-    my $url = $yt_link . "?$ticket_fields";
+    my $res = $self->ua->post($url, Content => encode_json({text => $comment_text}));
 
-    my $body = {
-        "text" => $comment_text
-    };
-
-    my $ticket = $ua->post($url, fields => 'id,author,text', Content => encode_json($body) );
-
-    if (!$ticket->is_success) {
-        $self->logger->error("Failed! " . $ticket->status_line);
+    if (!$res->is_success) {
+        $self->logger->error("Failed to add/update comment on $ticket_id: " . $res->status_line);
         return;
     }
 
@@ -323,24 +375,12 @@ sub add_update_comment {
 # Get youtrack comments for the given ticket id
 sub get_ticket_comments {
     my ($self, $ticket_id) = @_;
-
-    my $ua = $self->ua;
-    my $yt_link = $self->_get_api_path('issues', $ticket_id, 'comments');
-    my $ticket_fields = 'fields=id,author(login),text,deleted';
-    my $url = $yt_link . "?$ticket_fields";
-
-    my $ticket = $ua->get($url);
-
-    if (!$ticket->is_success) {
-        $self->logger->error("Failed! " . $ticket->status_line);
-        return;
-    }
-
-    return decode_json($ticket->decoded_content);
+    return $self->_get_collection($self->_get_api_path('issues', $ticket_id, 'comments'),
+        'id,author(login),text,deleted');
 }
 
 # ============================================================================ #
-# ============================================================================ #
+
+__PACKAGE__->meta->make_immutable;
 
 1;
-
