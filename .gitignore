@@ -1,8 +1,11 @@
 *.bak
 *.db
+*.db-journal
 *.token
 env.sh
 .env
+envs
 *.pem
+*.local.pl
 local/**
 yt_cache/**
