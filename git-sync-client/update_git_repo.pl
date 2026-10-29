@@ -47,12 +47,40 @@ my $reconnect_delay = 1;
 my $reconnect_timer;
 my @conn_timers;
 
-# Last state seen per project|ref, older (replayed) messages are dropped
+# Last state seen per project|ref, older (replayed) messages are dropped. Reset
+# on every new connection, so a server restored from an older backup (or with
+# its clock stepped back) is followed again after it restarts.
 my %last_seen;
 
-# Projects whose LFS fetch / salt fileserver update has to be retried, the
-# ref is already up to date so the next message for it retries these steps
-my %post_fetch_pending;
+# LFS fetch / salt fileserver update to be retried for a project. The ref is
+# already up to date, so the next message for it retries these steps. Kept as
+# a marker file in the repo git dir (git ignores it) to survive restarts.
+my $PENDING_MARKER = 'ghyt-post-fetch-pending';
+
+sub pending_file {
+    my ($project) = @_;
+    my $prj = $config->{repo}{$project} or return;
+    return "$prj->{local_path}/$PENDING_MARKER";
+}
+
+sub set_post_fetch_pending {
+    my $file = pending_file(shift) or return;
+    if (open(my $fh, '>', $file)) {
+        close($fh);
+    }
+}
+
+sub is_post_fetch_pending {
+    my $file = pending_file(shift) or return 0;
+    return -e $file ? 1 : 0;
+}
+
+sub clear_post_fetch_pending {
+    foreach my $project (@_) {
+        my $file = pending_file($project) or next;
+        unlink($file);
+    }
+}
 
 # ============================================================================ #
 
@@ -166,6 +194,7 @@ sub handle_handshake {
 
     if ($type eq 'ready') {
         $reconnect_delay = 1;
+        %last_seen       = ();
         log_msg('INFO', "Connected! Getting latest info...");
         $tx->send('give-latest');
         return 1;
@@ -256,7 +285,7 @@ sub check_for_change {
         log_msg('INFO', "$project $remote_ref - no update required");
 
         # Ref is up to date but LFS / salt fileserver update failed before
-        if ($post_fetch_pending{$project}) {
+        if (is_post_fetch_pending($project)) {
             log_msg('INFO', "Retrying LFS fetch / salt fileserver update for $project");
             post_fetch($prj_config, $data);
         }
@@ -276,7 +305,7 @@ sub post_fetch {
     my ($prj_config, $data) = @_;
 
     my $project = $data->{project};
-    $post_fetch_pending{$project} = 1;
+    set_post_fetch_pending($project);
 
     return if (!fetch_lfs($prj_config, $data));
 
@@ -347,7 +376,7 @@ sub salt_fileserver_update {
     my ($prj_config, $project) = @_;
 
     if ($prj_config and !$prj_config->{salt_fileserver_update}) {
-        delete $post_fetch_pending{$project} if (defined $project);
+        clear_post_fetch_pending($project) if (defined $project);
         return;
     }
 
@@ -377,7 +406,7 @@ sub salt_fileserver_update {
             }
             else {
                 log_msg('INFO', "@cmd done");
-                delete @post_fetch_pending{@projects};
+                clear_post_fetch_pending(@projects);
             }
 
             if ($fileserver_pending) {

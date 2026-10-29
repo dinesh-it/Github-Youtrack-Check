@@ -168,6 +168,17 @@ ok(wait_for(sub { slurp("$tmp/client3.log") =~ /Connected!/ }), 'client with ano
 sleep(2);
 unlike(slurp("$tmp/client2.log"), qr/Replaced by a new connection/, 'session of the other client kept');
 
+# A pending LFS / fileserver retry survives a client restart
+kill('TERM', $_) for (grep {$_} @pids[2 .. $#pids]);
+sleep(1);
+unlink("$tmp/fs.updated");
+path("$tmp/local.git/ghyt-post-fetch-pending")->spurt('');
+spawn({EX_GITHOOK_CONFIG_FILE => "$tmp/client.pl", GH_WEBSOCKET_SECRET => $ws_secret},
+    "$tmp/client4.log", $^X, "$FindBin::Bin/../git-sync-client/update_git_repo.pl");
+ok(wait_for(sub { -e "$tmp/fs.updated" }), 'pending retry done by a restarted client with an up to date ref')
+  or diag(slurp("$tmp/client4.log"));
+ok(wait_for(sub { !-e "$tmp/local.git/ghyt-post-fetch-pending" }), 'pending marker cleared');
+
 my $client_log = slurp("$tmp/client.log");
 unlike($client_log, qr/ghs_/, 'token never logged by the client');
 unlike(slurp("$tmp/server.log"), qr/ghs_/, 'token never logged by the server');

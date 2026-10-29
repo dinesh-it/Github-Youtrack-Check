@@ -25,5 +25,14 @@ Pushes can be delivered late or redelivered (the service redelivers failed web h
 newer than the state the service already has for that ref never moves it back: the ref is resolved from the
 GitHub API instead, and a ref which does not exist there any more is removed.
 
+The client also drops a state older than the last one it received for a ref (replay protection), the
+guard is reset on every new connection. A failed LFS fetch / salt fileserver update leaves a
+`ghyt-post-fetch-pending` marker in the repo git dir and is retried on the next message, also after a client
+restart.
+
+Runbook: if the server clock steps back (or its database is restored from an older backup) without a server
+restart, the client logs `Discarding state ... older than the last one received` on every re-sync - restart
+the client (or the server) once to clear it.
+
 ## Changing the secret / protocol
 Server and clients must use the same `GH_WEBSOCKET_SECRET` and protocol version, deploy the server and all clients together. Older clients (before the authenticated handshake) can not connect to the new server.
