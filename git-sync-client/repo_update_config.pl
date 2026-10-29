@@ -7,8 +7,15 @@
     # Optional CA file to verify the server certificate when using wss://
     #ca => '/etc/ssl/certs/micro-ci-ca.pem',
 
-    # Max 1 hour the connection can be idle, otherwise reconnect
-    inactive_timeout => 3600, # in seconds
+    # Keep alive ping (also keeps NAT gateways from dropping the connection),
+    # a connection idle for 2 x ping_interval is re-connected
+    #ping_interval => 60, # in seconds
+
+    # Ask the server for the latest state periodically to catch missed updates
+    #resync_interval => 180, # in seconds
+
+    # Command run after a successful fetch of a repo with salt_fileserver_update
+    #fileserver_update_command => ['salt-run', 'fileserver.update'],
 
     # Messages older than this are discarded (keep the host clock in sync)
     #max_message_age => 900, # in seconds
@@ -23,6 +30,7 @@
             local_path => '/opt/git/Project-Name.git',
             #remote_url => 'git@github.com:exceleron/Project-Name.git', # Optional, overrides server URL
             #force_fetch => 1,
+            #salt_fileserver_update => 1, # Refresh salt fileserver after fetch
 
             'refs/heads/test' => {
                 force_fetch => 1,

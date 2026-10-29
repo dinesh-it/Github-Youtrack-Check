@@ -13,6 +13,9 @@ The service can notify git sync clients when a repository changes, the client th
 * `git-sync-client/update_git_repo.pl` is the perl client and `git-sync-client/repo_update_config.pl` a sample config file
 * The client loads `lib/SecureChannel.pm` from the checkout and reads the secret from `GH_WEBSOCKET_SECRET` env
 * It passes the token to git through a credential helper pinned to the remote host, never on the command line
+* Repos using git LFS (an `lfs` directory in the local repo) also get `git lfs fetch --all` with the same credential handling
+* `salt_fileserver_update => 1` on a repo runs `salt-run fileserver.update` after a successful fetch (salt master)
+* Keep alive ping every `ping_interval` (60) secs and `give-latest` re-sync every `resync_interval` (180) secs
 * Remote URLs sent by the server are only accepted for `allowed_remote_hosts` (default `github.com`) and `allowed_owners` (default `exceleron`), a `remote_url` in the config overrides it
 
 ## Changing the secret / protocol

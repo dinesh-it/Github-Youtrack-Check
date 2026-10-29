@@ -89,14 +89,19 @@ path("$tmp/client.pl")->spurt(<<"EOF");
 {
     server_url => 'ws://127.0.0.1:$port/githubpush',
     allowed_remote_hosts => ['example.invalid'],
+    ping_interval => 1,
+    resync_interval => 2,
+    fileserver_update_command => ['sh', '-c', 'touch $tmp/fs.updated'],
     repo => {
         RepoA => {
             local_path => '$tmp/local.git',
             remote_url => '$tmp/upstream.git',
+            salt_fileserver_update => 1,
             'refs/heads/main' => { force_fetch => 1 },
         },
         RepoB => {
             local_path => '$tmp/localb.git',
+            salt_fileserver_update => 1,
             'refs/heads/main' => {},
         },
     },
@@ -137,9 +142,21 @@ ok(
     'client fetched the pushed commit'
 ) or diag(slurp("$tmp/client.log"));
 
+ok(wait_for(sub { -e "$tmp/fs.updated" }), 'salt fileserver update ran after the fetch');
+unlink("$tmp/fs.updated");
+
 hook({ref => 'refs/heads/main', after => $sha, repository => {name => 'RepoB', owner => $owner}, commits => []});
 ok(wait_for(sub { slurp("$tmp/client.log") =~ /Refusing to fetch from unexpected remote URL for RepoB/ }),
     'server provided remote URL is validated');
+ok(!-e "$tmp/fs.updated", 'no fileserver update when the fetch did not happen');
+
+ok(wait_for(sub { slurp("$tmp/client.log") =~ /Re-syncing: sending give-latest/ }), 'periodic re-sync');
+
+# Same client re-connecting replaces its old session
+spawn({EX_GITHOOK_CONFIG_FILE => "$tmp/client.pl", GH_WEBSOCKET_SECRET => $ws_secret},
+    "$tmp/client2.log", $^X, "$FindBin::Bin/../git-sync-client/update_git_repo.pl");
+ok(wait_for(sub { slurp("$tmp/client.log") =~ /Connection closed \(4000 Replaced by a new connection\)/ }),
+    'older session of the same client is closed');
 
 my $client_log = slurp("$tmp/client.log");
 unlike($client_log, qr/ghs_/, 'token never logged by the client');

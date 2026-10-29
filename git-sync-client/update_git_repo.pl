@@ -35,12 +35,16 @@ delete $config->{secret};
 # Keep the secret away from git and its hooks / helpers
 delete $ENV{GH_WEBSOCKET_SECRET};
 
+# The client pings every ping_interval secs (keeps NAT gateways from dropping
+# the idle connection), a connection without any traffic for twice that long is
+# considered dead and re-connected
 my $ua = Mojo::UserAgent->new;
-$ua->inactivity_timeout($config->{inactive_timeout} // 3600);
+$ua->inactivity_timeout($config->{inactive_timeout} // $config->{ping_interval} * 2);
 $ua->ca($config->{ca}) if ($config->{ca});
 
 my $reconnect_delay = 1;
 my $reconnect_timer;
+my @conn_timers;
 
 # ============================================================================ #
 
@@ -84,11 +88,31 @@ sub listen_github_hook {
                 }
             );
 
+            # Keep alive ping and periodic resync to catch any missed update
+            @conn_timers = (
+                Mojo::IOLoop->recurring($config->{ping_interval} => sub { $tx->send([1, 0, 0, 0, 9, 'ping']) }),
+                Mojo::IOLoop->recurring(
+                    $config->{resync_interval} => sub {
+                        return if (!$authed);
+                        log_msg('INFO', "Re-syncing: sending give-latest");
+                        $tx->send('give-latest');
+                    }
+                ),
+            );
+
             # Re-Connect on connection close
             $tx->on(
                 finish => sub {
                     my ($tx, $code, $reason) = @_;
+                    Mojo::IOLoop->remove($_) for (@conn_timers);
+                    @conn_timers = ();
                     log_msg('INFO', "Connection closed (" . join(' ', grep {defined} $code, $reason) . "), Re-Connecting...");
+
+                    # Another client with the same config connected from this host
+                    if (($code // 0) == 4000) {
+                        log_msg('WARN', "Another client with the same repo list connected, check for duplicate clients");
+                        $reconnect_delay = 60;
+                    }
                     schedule_reconnect();
                 }
             );
@@ -216,7 +240,10 @@ sub check_for_change {
     }
 
     log_msg('INFO', "Commit hash mismatch found for $project $remote_ref");
-    fetch_repo($prj_config, $ref_config, $data, $local_ref);
+    return if (!fetch_repo($prj_config, $ref_config, $data, $local_ref));
+
+    fetch_lfs($prj_config, $data);
+    salt_fileserver_update($prj_config);
 }
 
 # ============================================================================ #
@@ -224,22 +251,92 @@ sub check_for_change {
 sub fetch_repo {
     my ($prj_config, $ref_config, $data, $local_ref) = @_;
 
+    my $remote_url = remote_url($prj_config, $data) or return;
     my $remote_ref = $data->{ref};
-    my $remote_url = $prj_config->{remote_url} // $prj_config->{remote_path};
-
-    # Remote URL from the server is only accepted for the allowed github hosts
-    if (!$remote_url) {
-        $remote_url = $data->{remote_url} // '';
-        my $hosts  = join('|', map {quotemeta} @{$config->{allowed_remote_hosts}});
-        my $owners = join('|', map {quotemeta} @{$config->{allowed_owners}});
-        if ($remote_url !~ m{\Ahttps://(?:$hosts)/(?:$owners)/\Q$data->{project}\E\.git\z}i) {
-            log_msg('ERROR', "Refusing to fetch from unexpected remote URL for $data->{project}");
-            return;
-        }
-    }
 
     my $force_fetch = $ref_config->{force_fetch} // $prj_config->{force_fetch};
     my $refspec     = ($force_fetch ? '+' : '') . "$remote_ref:$local_ref";
+
+    log_msg('INFO', "Running git fetch $remote_url $refspec");
+    my ($status, $output) = run_git_remote($prj_config, $data, $remote_url, 'fetch', '-u', '--', $remote_url, $refspec);
+
+    if ($status != 0) {
+        log_msg('ERROR', "Git fetch failed ($status): $output");
+        return 0;
+    }
+
+    debug($output) if ($output);
+    log_msg('INFO', "Done!");
+    return 1;
+}
+
+# ============================================================================ #
+
+# Fetch LFS objects for repos which use git LFS
+sub fetch_lfs {
+    my ($prj_config, $data) = @_;
+
+    return if (!-d "$prj_config->{local_path}/lfs");
+
+    my $remote_url = remote_url($prj_config, $data) or return;
+
+    log_msg('INFO', "Running git lfs fetch --all $remote_url");
+    my ($status, $output) = run_git_remote($prj_config, $data, $remote_url, 'lfs', 'fetch', '--all', '--prune', $remote_url);
+
+    if ($status != 0) {
+        log_msg('ERROR', "Git LFS fetch failed ($status): $output");
+        return;
+    }
+
+    log_msg('INFO', "LFS fetch done!");
+}
+
+# ============================================================================ #
+
+# Refresh the salt fileserver cache for repos served by salt (salt master only)
+sub salt_fileserver_update {
+    my ($prj_config) = @_;
+
+    return if (!$prj_config->{salt_fileserver_update});
+
+    my @cmd = @{$config->{fileserver_update_command}};
+    log_msg('INFO', "Running @cmd");
+
+    my ($status, $output) = run_git({}, @cmd);
+    if ($status != 0) {
+        log_msg('WARN', "@cmd failed ($status): $output");
+        return;
+    }
+
+    log_msg('INFO', "@cmd done");
+}
+
+# ============================================================================ #
+
+# Remote URL from the config, or the server provided one when it points to an
+# allowed github host and owner
+sub remote_url {
+    my ($prj_config, $data) = @_;
+
+    my $remote_url = $prj_config->{remote_url} // $prj_config->{remote_path};
+    return $remote_url if ($remote_url);
+
+    $remote_url = $data->{remote_url} // '';
+    my $hosts  = join('|', map {quotemeta} @{$config->{allowed_remote_hosts}});
+    my $owners = join('|', map {quotemeta} @{$config->{allowed_owners}});
+    if ($remote_url !~ m{\Ahttps://(?:$hosts)/(?:$owners)/\Q$data->{project}\E\.git\z}i) {
+        log_msg('ERROR', "Refusing to fetch from unexpected remote URL for $data->{project}");
+        return;
+    }
+
+    return $remote_url;
+}
+
+# ============================================================================ #
+
+# Run a git command talking to the remote, returns (exit code, output)
+sub run_git_remote {
+    my ($prj_config, $data, $remote_url, @args) = @_;
 
     my @cmd = (
         'git', '-C', $prj_config->{local_path},
@@ -254,7 +351,7 @@ sub fetch_repo {
         '-c', 'http.followRedirects=false',
     );
 
-    my %env = (GIT_TERMINAL_PROMPT => 0);
+    my %env   = (GIT_TERMINAL_PROMPT => 0);
     my $token = $data->{token};
 
     # The token is handed over via env to a credential helper, so it never
@@ -269,19 +366,10 @@ sub fetch_repo {
               . 'test -n "$ok" && echo username=x-access-token && echo "password=$GHYT_GIT_TOKEN"; }; f');
     }
 
-    push(@cmd, 'fetch', '--', $remote_url, $refspec);
-
-    log_msg('INFO', "Running git fetch $remote_url $refspec");
-    my ($status, $output) = run_git(\%env, @cmd);
-
+    my ($status, $output) = run_git(\%env, @cmd, @args);
     $output =~ s/\Q$token\E/***/g if ($token);
-    if ($status != 0) {
-        log_msg('ERROR', "Git fetch failed ($status): $output");
-        return;
-    }
 
-    debug($output) if ($output);
-    log_msg('INFO', "Done!");
+    return ($status, $output);
 }
 
 # ============================================================================ #
@@ -356,6 +444,9 @@ sub load_config {
     }
 
     $cfg->{allowed_remote_hosts} //= ['github.com'];
+    $cfg->{ping_interval}        //= 60;
+    $cfg->{resync_interval}      //= 180;
+    $cfg->{fileserver_update_command} //= ['salt-run', 'fileserver.update'];
     $cfg->{allowed_owners}       //= ['exceleron'];
     $cfg->{max_message_age}      //= 900;
 
@@ -377,7 +468,7 @@ sub load_config {
     if ($cfg->{server_url} =~ m{^ws://}) {
         print "WARNING: server_url is not using TLS (wss://), messages are still encrypted and authenticated with the shared secret\n";
     }
-    print "inactivity_timeout set to " . ($cfg->{inactive_timeout} // 3600) . "\n";
+    print "ping every $cfg->{ping_interval} secs, re-sync every $cfg->{resync_interval} secs\n";
 
     return $cfg;
 }

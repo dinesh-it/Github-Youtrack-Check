@@ -454,8 +454,18 @@ sub handle_ws_message {
         Mojo::IOLoop->remove($session->{auth_timer});
         delete $session->{auth_timer};
 
-        $session->{authed} = 1;
-        $session->{repos}  = {map { $_ => 1 } @{$repos}};
+        $session->{authed}  = 1;
+        $session->{repos}   = {map { $_ => 1 } @{$repos}};
+        $session->{context} = join(',', @{$repos});
+
+        # A re-connecting client replaces its own older session, so dead
+        # connections (eg: dropped by a NAT) do not pile up
+        foreach my $old (values %ws_sessions) {
+            next if ($old == $session or !$old->{authed});
+            next if ($old->{ip} ne $session->{ip} or $old->{context} ne $session->{context});
+            $log->info("Closing previous git sync session from $old->{ip}");
+            $old->{c}->finish(4000, 'Replaced by a new connection');
+        }
         $log->info("Git sync client $session->{ip} authenticated for repos: " . join(', ', @{$repos}));
 
         $c->send({json => {type => 'ready'}});
