@@ -1,0 +1,18 @@
+[Unit]
+Description=Git sync client - fetches configured branches when they change on github
+AssertFileIsExecutable=/opt/git/Github-Youtrack-Check/git-sync-client/update_git_repo.pl
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Keep this file readable only by the service user, it holds GH_WEBSOCKET_SECRET
+# and EX_GITHOOK_CONFIG_FILE
+EnvironmentFile=-/opt/git/Github-Youtrack-Check/local/git-sync-client.env
+ExecStart=/opt/git/Github-Youtrack-Check/git-sync-client/update_git_repo.pl
+Restart=always
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+# ========================================================================== #
+# Dockerfile.test - runs the test suite on the same base as the EC2 hosts    #
+# (AlmaLinux 9 perl). Not used for deployment.                               #
+# ========================================================================== #
+
+FROM ghcr.io/exceleron/alma9-perl:latest
+
+WORKDIR /opt/git/Github-Youtrack-Check
+COPY cpanfile /opt/git/Github-Youtrack-Check
+RUN cpanm --installdeps --with-feature=git-sync-client .
+
+# Copy project sources (see .dockerignore, secrets are never copied)
+COPY . /opt/git/Github-Youtrack-Check
+
+CMD ["prove", "-r", "t"]
+
+# ========================================================================== #
