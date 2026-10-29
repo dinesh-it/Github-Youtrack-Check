@@ -322,6 +322,48 @@ subtest 'installation event failures keep the working token' => sub {
 };
 
 # ---------------------------------------------------------------------------- #
+subtest 'late or redelivered pushes never move a ref back' => sub {
+    my $now   = time;
+    my $state = sub { (Store::get_repo_state('RepoA', 'refs/heads/PRODUCTION') // {})->{latest_commit_id} // 'none' };
+    my $push  = sub {
+        my ($after, $at, %extra) = @_;
+        hook('push', {ref => 'refs/heads/PRODUCTION', after => $after, repository => {%{$repo}, pushed_at => $at}, commits => [], %extra});
+    };
+    my $run_timers = sub { Mojo::IOLoop->timer(0.6 => sub { Mojo::IOLoop->stop }); Mojo::IOLoop->start };
+
+    mock_reset();
+    mock_state(refs => {'RepoA:refs/heads/PRODUCTION' => sha('b')});
+
+    $push->(sha('b'), $now);
+    is($state->(), sha('b'), 'newer push stored');
+
+    # Service was down, push A (older) is redelivered after B is known
+    $push->(sha('a'), $now - 600)->status_is(200);
+    $run_timers->();
+    is($state->(), sha('b'), 'older push does not move the ref back');
+
+    # Old delete redelivered after the branch was re-created
+    $push->('0' x 40, $now - 300, deleted => 1)->json_is('/msg', 'Older delete ignored');
+    $run_timers->();
+    is($state->(), sha('b'), 'older delete ignored');
+
+    # Same second, different sha - resolved from github
+    mock_state(refs => {'RepoA:refs/heads/PRODUCTION' => sha('c')});
+    $push->(sha('d'), $now);
+    $run_timers->();
+    is($state->(), sha('c'), 'ambiguous push resolved from the github ref');
+
+    $push->(sha('e'), $now + 5);
+    is($state->(), sha('e'), 'later push stored');
+
+    # Branch deleted on github, delete event lost - resolve finds no ref
+    mock_state(refs => {});
+    $push->(sha('a'), $now - 900);
+    $run_timers->();
+    is($state->(), 'none', 'state removed when the ref does not exist on github');
+};
+
+# ---------------------------------------------------------------------------- #
 subtest 'git sync websocket' => sub {
     my $sc = SecureChannel->new(secret => $ws_secret);
 
@@ -363,7 +405,7 @@ subtest 'git sync websocket' => sub {
     $t->finish_ok;
 
     # Branch delete removes the state
-    hook('push', {ref => 'refs/heads/main', after => '0' x 40, deleted => 1, repository => $repo, commits => []})
+    hook('push', {ref => 'refs/heads/main', after => '0' x 40, deleted => 1, repository => {%{$repo}, pushed_at => time + 10}, commits => []})
       ->json_is('/msg', 'Ref deleted');
 };
 

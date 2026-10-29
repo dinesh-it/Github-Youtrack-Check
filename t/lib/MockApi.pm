@@ -27,6 +27,7 @@ sub reset_state {
         fail         => {},
         comments     => {},
         deliveries   => [],
+        refs         => {},
     );
     @calls = ();
 }
@@ -108,6 +109,13 @@ get '/gh/repos/:o/:r/pulls/:n/commits' => sub {
     my $list = $state{commits}{$c->param('r') . '#' . $c->param('n')};
     return $c->render(json => {message => 'Not Found'}, status => 404) if (!$list);
     $c->render(json => $list);
+};
+
+get '/gh/repos/:o/:r/git/ref/*ref' => sub {
+    my $c   = shift;
+    my $sha = $state{refs}{$c->param('r') . ':refs/' . $c->param('ref')};
+    return $c->render(json => {message => 'Not Found'}, status => 404) if (!$sha);
+    $c->render(json => {ref => 'refs/' . $c->param('ref'), object => {sha => $sha, type => 'commit'}});
 };
 
 get '/gh/repos/:o/:r/branches' => sub {

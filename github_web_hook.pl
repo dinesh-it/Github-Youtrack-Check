@@ -203,8 +203,16 @@ sub on_push {
     my $ref   = $params->{ref} // '';
     my $after = $params->{after} // '';
 
+    my $pushed_at = $params->{repository}{pushed_at};
+    $pushed_at = undef if (!defined $pushed_at or $pushed_at !~ /^\d+$/);
+
     # Branch / tag deleted, nothing to check or sync
     if ($params->{deleted} or $after =~ /^0+$/) {
+        if (!push_is_latest($name, $ref, $pushed_at, '')) {
+            refresh_ref_later($owner, $name, $ref);
+            return (200, {project => $name, ref => $ref, status => 'ok', msg => 'Older delete ignored'});
+        }
+
         Store::delete_repo_state($name, $ref);
         $log->info("Push event for deleted ref $owner/$name/$ref");
         return (200, {project => $name, ref => $ref, status => 'ok', msg => 'Ref deleted'});
@@ -223,18 +231,25 @@ sub on_push {
         }
     );
 
-    my $state = Store::update_repo_state(
-        {
-            project          => $name,
-            ref              => $ref,
-            latest_commit_id => $after,
-            last_updated     => $params->{repository}{pushed_at} || time,
-            remote_url       => clone_url($owner, $name),
-        }
-    );
+    # Commits are always checked, but a late or redelivered push must never move
+    # the ref back for sync clients
+    if (push_is_latest($name, $ref, $pushed_at, $after)) {
+        my $state = Store::update_repo_state(
+            {
+                project          => $name,
+                ref              => $ref,
+                latest_commit_id => $after,
+                last_updated     => $pushed_at,
+                remote_url       => clone_url($owner, $name),
+            }
+        );
 
-    # Notify sync clients once the web hook response is sent
-    Mojo::IOLoop->timer(0.2 => sub { broadcast_state($state) });
+        # Notify sync clients once the web hook response is sent
+        Mojo::IOLoop->timer(0.2 => sub { broadcast_state($state) });
+    }
+    else {
+        refresh_ref_later($owner, $name, $ref);
+    }
 
     $log->info("Push event received for $owner/$name/$ref with $count commit(s) - added to queue");
     return (200, {project => $name, ref => $ref, status => 'ok', msg => 'Commit added for check'});
@@ -271,6 +286,71 @@ sub on_pull_request {
 
     $log->info("PR event with action $action received for $owner/$name#$pr->{number} - added to queue");
     return (200, {project => $name, status => 'ok', msg => 'Pull request commits added for check', ref => ($pr->{head} // {})->{sha}});
+}
+
+# ============================================================================ #
+
+# Whether a push (pushed at $pushed_at, moving $ref to $sha) is newer than the
+# stored state. Not sure (no push time, or not newer than the stored state with
+# a different sha) means the ref is resolved from github instead.
+sub push_is_latest {
+    my ($project, $ref, $pushed_at, $sha) = @_;
+
+    my $stored = Store::get_repo_state($project, $ref);
+    return $pushed_at ? 1 : 0 if (!$stored);
+
+    my $stored_at = $stored->{last_updated} // 0;
+    $stored_at = str2time($stored_at) // 0 if ($stored_at !~ /^\d+$/);
+
+    return 1 if ($pushed_at and $pushed_at > $stored_at);
+
+    if ($stored->{latest_commit_id} ne $sha) {
+        $log->info("Push for $project $ref is not newer than the known state, resolving the ref from github");
+    }
+
+    return 0;
+}
+
+# ============================================================================ #
+
+# Resolve the current target of a ref from github, update and broadcast it
+sub refresh_ref_later {
+    my ($owner, $project, $ref) = @_;
+
+    Mojo::IOLoop->timer(0.2 => sub { run_job(refresh_ref => sub { refresh_ref($owner, $project, $ref) }) });
+}
+
+sub refresh_ref {
+    my ($owner, $project, $ref) = @_;
+
+    my ($data, $res) = $gt->get_ref($owner, $project, $ref);
+    my $sha = (ref($data) eq 'HASH' and ref($data->{object}) eq 'HASH') ? $data->{object}{sha} : undef;
+
+    if (valid_sha($sha)) {
+        my $stored = Store::get_repo_state($project, $ref);
+        return if ($stored and $stored->{latest_commit_id} eq $sha);
+
+        broadcast_state(
+            Store::update_repo_state(
+                {
+                    project          => $project,
+                    ref              => $ref,
+                    latest_commit_id => $sha,
+                    last_updated     => time,
+                    remote_url       => clone_url($owner, $project),
+                }
+            )
+        );
+        return;
+    }
+
+    if ($res and $res->code == 404) {
+        $log->info("Ref $owner/$project/$ref does not exist any more");
+        Store::delete_repo_state($project, $ref);
+        return;
+    }
+
+    $log->warn("Could not resolve $owner/$project/$ref, the next poll will correct it");
 }
 
 # ============================================================================ #
@@ -453,19 +533,25 @@ sub handle_ws_message {
         Mojo::IOLoop->remove($session->{auth_timer});
         delete $session->{auth_timer};
 
+        # Client id (eg: host name) identifies a client, also behind a proxy
+        # where all clients share one ip
+        my $client_id = $data->{client_id};
+        $client_id = undef if (!defined $client_id or ref($client_id) or $client_id !~ /\A[A-Za-z0-9_.:-]{1,100}\z/);
+
         $session->{authed}  = 1;
         $session->{repos}   = {map { $_ => 1 } @{$repos}};
         $session->{context} = join(',', @{$repos});
+        $session->{client}  = $client_id // "ip:$session->{ip}";
 
         # A re-connecting client replaces its own older session, so dead
         # connections (eg: dropped by a NAT) do not pile up
         foreach my $old (values %ws_sessions) {
             next if ($old == $session or !$old->{authed});
-            next if ($old->{ip} ne $session->{ip} or $old->{context} ne $session->{context});
+            next if ($old->{client} ne $session->{client} or $old->{context} ne $session->{context});
             $log->info("Closing previous git sync session from $old->{ip}");
             $old->{c}->finish(4000, 'Replaced by a new connection');
         }
-        $log->info("Git sync client $session->{ip} authenticated for repos: " . join(', ', @{$repos}));
+        $log->info("Git sync client $session->{client} ($session->{ip}) authenticated for repos: " . join(', ', @{$repos}));
 
         $c->send({json => {type => 'ready'}});
         return;

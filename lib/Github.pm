@@ -240,15 +240,22 @@ sub _app_request {
 # ============================================================================ #
 
 # Web hook deliveries of the app delivered at or after $since (epoch), newest
-# first. Returns array ref or undef on failure.
+# first. Returns array ref or undef on failure, in list context also whether
+# the list was cut at $max_pages (older deliveries not returned).
 sub get_hook_deliveries {
     my ($self, $since, $max_pages) = @_;
 
-    $max_pages //= 50;
+    $max_pages //= 300;
+    my $truncated = 0;
     my $url = _with_query($self->api_path('app', 'hook', 'deliveries'), per_page => 100);
     my @all;
 
-    while ($url and $max_pages-- > 0) {
+    while ($url) {
+        if ($max_pages-- <= 0) {
+            $truncated = 1;
+            last;
+        }
+
         my $res = $self->_app_request(GET => $url);
         return if (!$res->is_success);
 
@@ -273,7 +280,7 @@ sub get_hook_deliveries {
         $url = undef if ($url and index($url, $self->api_url . '/') != 0);
     }
 
-    return \@all;
+    return wantarray ? (\@all, $truncated) : \@all;
 }
 
 # ============================================================================ #
@@ -488,6 +495,15 @@ sub fetch_all_commits {
 
     $self->logger->debug("Found " . scalar(@{$commits}) . " commit(s)");
     return $commits;
+}
+
+# ============================================================================ #
+
+# Current target of a ref (eg: refs/heads/master), 404 when it does not exist
+sub get_ref {
+    my ($self, $owner, $repo, $ref) = @_;
+    (my $short = $ref) =~ s{^refs/}{};
+    return $self->get_api_response($self->api_path('repos', $owner, $repo, 'git', 'ref', split(m{/}, $short)));
 }
 
 # ============================================================================ #

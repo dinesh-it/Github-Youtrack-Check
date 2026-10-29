@@ -15,8 +15,15 @@ The service can notify git sync clients when a repository changes, the client th
 * It passes the token to git through a credential helper pinned to the remote host, never on the command line
 * Repos using git LFS (an `lfs` directory in the local repo) also get `git lfs fetch --all` with the same credential handling
 * `salt_fileserver_update => 1` on a repo runs `salt-run fileserver.update` after a successful fetch (salt master)
+* `client_id` (default host name) identifies the client, a re-connect replaces the older session of the same client id and repo list
+* `-u` (update head ok) is only used for bare repos, LFS failures skip the salt fileserver update, `salt-run` runs in a sub process
 * Keep alive ping every `ping_interval` (60) secs and `give-latest` re-sync every `resync_interval` (180) secs
 * Remote URLs sent by the server are only accepted for `allowed_remote_hosts` (default `github.com`) and `allowed_owners` (default `exceleron`), a `remote_url` in the config overrides it
+
+## Ref ordering
+Pushes can be delivered late or redelivered (the service redelivers failed web hooks). A push which is not
+newer than the state the service already has for that ref never moves it back: the ref is resolved from the
+GitHub API instead, and a ref which does not exist there any more is removed.
 
 ## Changing the secret / protocol
 Server and clients must use the same `GH_WEBSOCKET_SECRET` and protocol version, deploy the server and all clients together. Older clients (before the authenticated handshake) can not connect to the new server.

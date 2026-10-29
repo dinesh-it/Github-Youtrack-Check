@@ -134,7 +134,7 @@ sub hook {
 }
 
 my $owner = {login => 'exceleron', name => 'exceleron'};
-is(hook({ref => 'refs/heads/main', after => $sha, repository => {name => 'RepoA', owner => $owner}, commits => []})->code,
+is(hook({ref => 'refs/heads/main', after => $sha, repository => {name => 'RepoA', owner => $owner, pushed_at => time}, commits => []})->code,
     200, 'push event accepted');
 
 ok(
@@ -145,7 +145,7 @@ ok(
 ok(wait_for(sub { -e "$tmp/fs.updated" }), 'salt fileserver update ran after the fetch');
 unlink("$tmp/fs.updated");
 
-hook({ref => 'refs/heads/main', after => $sha, repository => {name => 'RepoB', owner => $owner}, commits => []});
+hook({ref => 'refs/heads/main', after => $sha, repository => {name => 'RepoB', owner => $owner, pushed_at => time}, commits => []});
 ok(wait_for(sub { slurp("$tmp/client.log") =~ /Refusing to fetch from unexpected remote URL for RepoB/ }),
     'server provided remote URL is validated');
 ok(!-e "$tmp/fs.updated", 'no fileserver update when the fetch did not happen');
@@ -157,6 +157,14 @@ spawn({EX_GITHOOK_CONFIG_FILE => "$tmp/client.pl", GH_WEBSOCKET_SECRET => $ws_se
     "$tmp/client2.log", $^X, "$FindBin::Bin/../git-sync-client/update_git_repo.pl");
 ok(wait_for(sub { slurp("$tmp/client.log") =~ /Connection closed \(4000 Replaced by a new connection\)/ }),
     'older session of the same client is closed');
+
+# Another host (different client id) with the same repos from the same ip is not replaced
+path("$tmp/client3.pl")->spurt(path("$tmp/client.pl")->slurp =~ s/\{\n/{\n    client_id => 'other-host',\n/r);
+spawn({EX_GITHOOK_CONFIG_FILE => "$tmp/client3.pl", GH_WEBSOCKET_SECRET => $ws_secret},
+    "$tmp/client3.log", $^X, "$FindBin::Bin/../git-sync-client/update_git_repo.pl");
+ok(wait_for(sub { slurp("$tmp/client3.log") =~ /Connected!/ }), 'client with another id connected');
+sleep(2);
+unlike(slurp("$tmp/client2.log"), qr/Replaced by a new connection/, 'session of the other client kept');
 
 my $client_log = slurp("$tmp/client.log");
 unlike($client_log, qr/ghs_/, 'token never logged by the client');

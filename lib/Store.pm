@@ -197,6 +197,13 @@ sub txn {
 # Repository state for git sync clients
 # ============================================================================ #
 
+sub get_repo_state {
+    my ($project, $ref) = @_;
+    return dbh()->selectrow_hashref(q/SELECT * FROM GitRepoState WHERE project = ? AND ref = ?/, undef, $project, $ref);
+}
+
+# ============================================================================ #
+
 sub get_all_repo_state {
     return dbh()->selectall_arrayref(q/SELECT * FROM GitRepoState/, {Slice => {}}) || [];
 }
