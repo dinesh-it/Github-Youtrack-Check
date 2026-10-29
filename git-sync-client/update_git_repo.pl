@@ -47,6 +47,13 @@ my $reconnect_delay = 1;
 my $reconnect_timer;
 my @conn_timers;
 
+# Last state seen per project|ref, older (replayed) messages are dropped
+my %last_seen;
+
+# Projects whose LFS fetch / salt fileserver update has to be retried, the
+# ref is already up to date so the next message for it retries these steps
+my %post_fetch_pending;
+
 # ============================================================================ #
 
 sub log_msg {
@@ -196,6 +203,15 @@ sub handle_message {
 
     debug("PushEvent received: $data->{project} " . ($data->{ref} // '') . ' ' . ($data->{sha} // ''));
 
+    # Never go back to an older state, eg: a captured message replayed
+    my $seen_key = ($data->{project} // '') . '|' . ($data->{ref} // '');
+    my $epoch    = $data->{updated_epoch} // 0;
+    if ($epoch !~ /^\d+$/ or ($last_seen{$seen_key} and $epoch < $last_seen{$seen_key})) {
+        log_msg('WARN', "Discarding state for $seen_key older than the last one received");
+        return;
+    }
+    $last_seen{$seen_key} = $epoch;
+
     check_for_change($data);
 }
 
@@ -238,14 +254,34 @@ sub check_for_change {
 
     if ($last_commit eq $data->{sha}) {
         log_msg('INFO', "$project $remote_ref - no update required");
+
+        # Ref is up to date but LFS / salt fileserver update failed before
+        if ($post_fetch_pending{$project}) {
+            log_msg('INFO', "Retrying LFS fetch / salt fileserver update for $project");
+            post_fetch($prj_config, $data);
+        }
         return;
     }
 
     log_msg('INFO', "Commit hash mismatch found for $project $remote_ref");
     return if (!fetch_repo($prj_config, $ref_config, $data, $local_ref));
+
+    post_fetch($prj_config, $data);
+}
+
+# ============================================================================ #
+
+# Steps after the refs are fetched, retried on the next message when failed
+sub post_fetch {
+    my ($prj_config, $data) = @_;
+
+    my $project = $data->{project};
+    $post_fetch_pending{$project} = 1;
+
     return if (!fetch_lfs($prj_config, $data));
 
-    salt_fileserver_update($prj_config);
+    # Pending is cleared once the salt fileserver update finished fine
+    salt_fileserver_update($prj_config, $project);
 }
 
 # ============================================================================ #
@@ -305,16 +341,26 @@ sub fetch_lfs {
 # only). Runs in a sub process so a slow salt-run does not block the websocket,
 # requests while one is running are merged into one more run.
 my ($fileserver_running, $fileserver_pending);
+my %fileserver_projects;
 
 sub salt_fileserver_update {
-    my ($prj_config) = @_;
+    my ($prj_config, $project) = @_;
 
-    return if ($prj_config and !$prj_config->{salt_fileserver_update});
+    if ($prj_config and !$prj_config->{salt_fileserver_update}) {
+        delete $post_fetch_pending{$project} if (defined $project);
+        return;
+    }
+
+    $fileserver_projects{$project} = 1 if (defined $project);
 
     if ($fileserver_running) {
         $fileserver_pending = 1;
         return;
     }
+
+    # Projects covered by this run
+    my @projects = keys %fileserver_projects;
+    %fileserver_projects = ();
 
     my @cmd = @{$config->{fileserver_update_command}};
     log_msg('INFO', "Running @cmd");
@@ -327,10 +373,11 @@ sub salt_fileserver_update {
             $fileserver_running = 0;
 
             if ($err or $status != 0) {
-                log_msg('WARN', "@cmd failed (" . ($err || $status) . "): " . ($output // ''));
+                log_msg('WARN', "@cmd failed (" . ($err || $status) . "): " . ($output // '') . ", will be retried");
             }
             else {
                 log_msg('INFO', "@cmd done");
+                delete @post_fetch_pending{@projects};
             }
 
             if ($fileserver_pending) {

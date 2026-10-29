@@ -91,7 +91,7 @@ path("$tmp/client.pl")->spurt(<<"EOF");
     allowed_remote_hosts => ['example.invalid'],
     ping_interval => 1,
     resync_interval => 2,
-    fileserver_update_command => ['sh', '-c', 'touch $tmp/fs.updated'],
+    fileserver_update_command => ['sh', '-c', 'test -e $tmp/fs.failed-once || { touch $tmp/fs.failed-once; exit 1; }; touch $tmp/fs.updated'],
     repo => {
         RepoA => {
             local_path => '$tmp/local.git',
@@ -142,7 +142,9 @@ ok(
     'client fetched the pushed commit'
 ) or diag(slurp("$tmp/client.log"));
 
-ok(wait_for(sub { -e "$tmp/fs.updated" }), 'salt fileserver update ran after the fetch');
+ok(wait_for(sub { -e "$tmp/fs.failed-once" }), 'salt fileserver update ran after the fetch');
+ok(wait_for(sub { slurp("$tmp/client.log") =~ /failed \(1\).*will be retried/ }), 'failure logged');
+ok(wait_for(sub { -e "$tmp/fs.updated" }), 'failed fileserver update retried on the next re-sync');
 unlink("$tmp/fs.updated");
 
 hook({ref => 'refs/heads/main', after => $sha, repository => {name => 'RepoB', owner => $owner, pushed_at => time}, commits => []});
