@@ -81,6 +81,17 @@ sub init_schema {
         )/
     );
 
+    # Status / check posts github rejected permanently, shown by ci-doctor
+    $db->do(
+        q/CREATE TABLE IF NOT EXISTS CheckFailure (
+            project TEXT NOT NULL,
+            commit_id TEXT NOT NULL,
+            state TEXT NULL,
+            error TEXT NULL,
+            created_epoch INTEGER NOT NULL
+        )/
+    );
+
     $db->do(q/CREATE INDEX IF NOT EXISTS idx_push_event_type ON GitPushEvent (event_type, created_epoch)/);
     $db->do(q/CREATE INDEX IF NOT EXISTS idx_push_event_commit ON GitPushEvent (project, commit_id)/);
     $db->do(q/CREATE INDEX IF NOT EXISTS idx_repo_state ON GitRepoState (project, ref)/);
@@ -274,6 +285,24 @@ sub set_state_epoch {
           ON CONFLICT(name) DO UPDATE SET updated_epoch = excluded.updated_epoch/, undef, $name, $epoch
     );
     return $epoch;
+}
+
+# ============================================================================ #
+# Permanent status / check post failures
+# ============================================================================ #
+
+sub record_check_failure {
+    my ($project, $commit_id, $state, $error) = @_;
+    my $db = dbh();
+    $db->do(q/INSERT INTO CheckFailure (project, commit_id, state, error, created_epoch) VALUES (?,?,?,?,?)/,
+        undef, $project, $commit_id, $state, $error, time);
+    $db->do(q/DELETE FROM CheckFailure WHERE created_epoch < ?/, undef, time - 7 * 24 * 3600);
+}
+
+sub list_check_failures {
+    my ($since) = @_;
+    return dbh()->selectall_arrayref(q/SELECT * FROM CheckFailure WHERE created_epoch >= ? ORDER BY created_epoch DESC/,
+        {Slice => {}}, $since);
 }
 
 # ============================================================================ #

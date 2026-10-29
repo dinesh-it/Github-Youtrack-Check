@@ -92,6 +92,15 @@ subtest 'probe' => sub {
 };
 
 # ---------------------------------------------------------------------------- #
+subtest 'probe reports a stale spooler' => sub {
+    Store::dbh()->do(q/UPDATE SpoolerState SET updated_epoch = ? WHERE name = 'spooler'/, undef, time - 1000);
+    $t->get_ok('/ghyt-ci')->status_is(503)->json_is('/status', 'failed')->json_is('/spooler_state', 'failed');
+
+    Store::update_alive();
+    $t->get_ok('/ghyt-ci')->status_is(200)->json_is('/status', 'ok');
+};
+
+# ---------------------------------------------------------------------------- #
 subtest 'web hook signature is required' => sub {
     hook('ping', {repository => $repo}, signature => '')->status_is(401);
     hook('ping', {repository => $repo}, signature => 'sha256=' . ('0' x 64))->status_is(401);
@@ -267,6 +276,19 @@ subtest 'status post retried on 5xx' => sub {
 
     $fn{check_all_commits}->();
     is(final_status(sha('4'))->{state}, 'success', 'posted on retry');
+};
+
+# ---------------------------------------------------------------------------- #
+subtest 'status rejected by github is recorded' => sub {
+    mock_reset();
+    mock_state(fail => {'POST /gh/repos/exceleron/RepoA/statuses/' . sha('c') => {code => 422, count => 1}});
+    hook('push', {ref => 'refs/heads/br2', after => sha('c'), repository => $repo, commits => [{id => sha('c'), message => 'OPS-1: q'}]});
+
+    $fn{check_all_commits}->();
+    my ($failure) = grep { $_->{commit_id} eq sha('c') } @{Store::list_check_failures(time - 60)};
+    ok($failure, 'permanent failure recorded');
+    like($failure->{error} // '', qr/^422/, 'with the github response');
+    ok(!grep({ $_->{commit_id} eq sha('c') } @{Store::get_commits()}), 'not retried');
 };
 
 # ---------------------------------------------------------------------------- #

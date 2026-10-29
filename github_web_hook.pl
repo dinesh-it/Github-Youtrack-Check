@@ -852,6 +852,20 @@ sub post_status {
 
     my $data = {%{$commit}, desc => $desc};
 
+    $gt->last_post_error(undef);
+    my $done = post_status_to_github($data, $state, $desc, $link);
+
+    # Github rejected it for good (eg: 403 / 422), keep it visible for ci-doctor
+    if ($done and $gt->last_post_error) {
+        Store::record_check_failure($commit->{project}, $commit->{commit_id}, $state, $gt->last_post_error);
+    }
+
+    return $done;
+}
+
+sub post_status_to_github {
+    my ($data, $state, $desc, $link) = @_;
+
     return $gt->post_github_status($data, $state, $link) if (!$use_checks_api);
 
     my $summary = 'If multiple tickets mentioned in the message, only the first ticket will be considered';

@@ -3,6 +3,12 @@ The service and the git sync client run directly on AlmaLinux EC2 hosts under sy
 
 Local files (env file, github app key, database) go in `local/` of the checkout, it is ignored by git. The units also read a `.env` from the checkout root for older setups.
 
+The unit files in `service/` are for a plain checkout. The salt managed AWS deployment (`pams-salt-cfg`,
+`sysmodules/micro-ci` and `network-management/git-repo`) has its own units: the service runs as
+`github-webhook-listener` with its env in `/etc/pams/service/github-webhook-listener/env`, state in
+`/var/lib/github-youtrack`, and the nm02 client is a salt managed copy. `ci-doctor.pl` looks for the salt env
+file first, then `local/.env` and `.env`.
+
 ## Server
 1. Run the tests: `make test` (or `make test-docker`)
 2. On the server, update the checkout: `cd /opt/git/Github-Youtrack-Check && git pull`

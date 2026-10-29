@@ -4,8 +4,9 @@
 #
 # Run it on the service host as the service user with the service env, eg:
 #   sudo -u github-webhook-listener bash -lc 'scripts/ci-doctor.pl status'
-# The env file /etc/pams/service/github-webhook-listener/env (or --env-file)
-# is loaded for any ENV not already set.
+# The first readable env file of --env-file, the salt deployment one
+# (/etc/pams/service/github-webhook-listener/env), local/.env and .env of the
+# checkout is loaded for any ENV not already set.
 #
 # --json prints one JSON document on stdout for monitoring tools, logs go to
 # stderr. Exit code: 0 ok, 1 problem found / failed, 2 usage error.
@@ -18,6 +19,7 @@ use JSON::XS;
 use LWP::UserAgent;
 use Mojo::Log;
 use POSIX qw(strftime);
+use List::Util qw(min);
 
 use FindBin;
 use lib "$FindBin::Bin/../lib";
@@ -29,7 +31,7 @@ use Redelivery;
 
 $| = 1;
 
-my $DEFAULT_ENV_FILE = '/etc/pams/service/github-webhook-listener/env';
+my @DEFAULT_ENV_FILES = ('/etc/pams/service/github-webhook-listener/env', "$FindBin::Bin/../local/.env", "$FindBin::Bin/../.env");
 
 # Each command returns a hash with an 'ok' flag, printed as text or JSON
 my %commands = (
@@ -56,6 +58,7 @@ my $log = Mojo::Log->new(level => $global{debug} ? 'debug' : 'warn');
 
 my $result = eval {
     load_env($global{'env-file'});
+    warn_if_not_db_owner();
     $commands{$command}[0]->(@args);
 };
 
@@ -116,7 +119,7 @@ EOF
 sub load_env {
     my ($file) = @_;
 
-    $file //= $DEFAULT_ENV_FILE if (-r $DEFAULT_ENV_FILE);
+    ($file) = grep { -r $_ } @DEFAULT_ENV_FILES if (!$file);
     return if (!$file);
 
     open(my $fh, '<', $file) or die "Can't read env file $file: $!\n";
@@ -128,6 +131,17 @@ sub load_env {
         $ENV{$key} //= $value;
     }
     close($fh);
+}
+
+# ============================================================================ #
+
+# Queue changes and token refreshes must run as the service user
+sub warn_if_not_db_owner {
+    my @st = stat(Store::db_file());
+    if (@st and $st[4] != $>) {
+        print STDERR "WARNING: not running as the owner of " . Store::db_file()
+          . ", run ci-doctor as the service user (eg: sudo -u github-webhook-listener)\n";
+    }
 }
 
 # ============================================================================ #
@@ -221,8 +235,19 @@ sub cmd_status {
         }
     } @{Store::redelivery_list()};
 
+    my @check_failures = map {
+        {
+            project    => $_->{project},
+            commit_id  => $_->{commit_id},
+            state      => $_->{state},
+            error      => $_->{error},
+            at         => iso($_->{created_epoch}),
+        }
+    } @{Store::list_check_failures(time - 24 * 3600)};
+
     return {
         ok    => $res->is_success,
+        check_failures_24h => {count => scalar(@check_failures), failures => [@check_failures[0 .. min(19, $#check_failures)]]},
         probe => {
             url        => $opt{url},
             code       => $res->code,
@@ -258,6 +283,12 @@ sub text_status {
     print "\nQueue\n";
     printf("  Pull requests %d, commits %d, PR titles %d, oldest %s\n",
         $q->{pull_requests}, $q->{commits}, $q->{pr_titles}, defined $q->{oldest_secs} ? age($q->{oldest_secs}) : '-');
+
+    my $cf = $r->{check_failures_24h};
+    print "\nStatus posts rejected by github (24h)\n";
+    printf("  Count        %d\n", $cf->{count});
+    printf("    %s %-24s %s %s: %s\n", $_->{at}, $_->{project}, substr($_->{commit_id}, 0, 10), $_->{state} // '', $_->{error} // '')
+      for (@{$cf->{failures}});
 
     my $rd = $r->{redelivery};
     print "\nWeb hook redelivery\n";

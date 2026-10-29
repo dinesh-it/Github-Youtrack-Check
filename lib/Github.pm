@@ -41,6 +41,9 @@ has 'read_only_tokens' => (is => 'ro', default => sub { {} });
 
 has '_private_key_cache' => (is => 'rw');
 
+# Why the last status / check post failed permanently (not retried)
+has 'last_post_error' => (is => 'rw');
+
 # ============================================================================ #
 
 has 'logger' => (
@@ -455,7 +458,12 @@ sub get_all_pages {
     my @all;
     my $res;
 
-    while ($page_url and $max_pages-- > 0) {
+    while ($page_url) {
+        if ($max_pages-- <= 0) {
+            $self->logger->warn("Stopped after the max number of pages for $url, the list is incomplete");
+            last;
+        }
+
         $res = $self->request(GET => $page_url);
         return wantarray ? (undef, $res) : undef if (!$res->is_success);
 
@@ -602,6 +610,7 @@ sub post_github_status {
     }
 
     $self->logger->error("Status update for $url failed permanently, will not be retried");
+    $self->last_post_error($res->status_line . ' ' . substr($res->decoded_content // '', 0, 200));
     return 1;
 }
 
@@ -645,6 +654,7 @@ sub post_github_check {
     }
 
     $self->logger->error("Check update for $url failed permanently, will not be retried");
+    $self->last_post_error($res->status_line . ' ' . substr($res->decoded_content // '', 0, 200));
     return 1;
 }
 
