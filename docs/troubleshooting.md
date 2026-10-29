@@ -31,3 +31,23 @@ sudo -u github-webhook-listener bash -lc '/opt/git/micro-ci-chk-youtrack/scripts
 | `sync <REPO> [BRANCH]` | Refresh branch state from GitHub, git sync clients fetch it on their next re-sync |
 
 `--debug` shows the API calls.
+
+## JSON output for monitoring
+`--json` (before the command) prints one JSON document on stdout, logs go to stderr. Every document has
+`command` and `ok`, errors are `{"ok": false, "error": "..."}`. Exit code: `0` ok, `1` problem found or
+command failed, `2` usage error.
+
+```
+ci-doctor.pl --json status
+{"command":"status","ok":true,
+ "probe":{"code":200,"ok":true,"status":"ok","url":"http://localhost/ghyt-ci"},
+ "spooler":{"age_secs":12,"last_run":"2026-10-29T08:00:00Z"},
+ "queue":{"commits":0,"oldest_secs":null,"pr_titles":0,"pull_requests":0},
+ "redelivery":{"failed_count":1,"gave_up_count":0,"last_scan":"...","last_scan_secs":40,
+   "failed":[{"guid":"...","event":"push","status_code":502,"attempts":1,"gave_up":false,...}]},
+ "database":"/var/lib/github-youtrack/github_web_hook.db"}
+```
+
+Useful alerts from `status`: `ok` false (probe down), `spooler.age_secs` > 120, `queue.oldest_secs` growing
+(checks stuck), `redelivery.gave_up_count` > 0 (web hooks keep failing), `redelivery.last_scan_secs` > 900.
+`deliveries --failed --json` exits `1` while any web hook delivery is not delivered yet.

@@ -3,14 +3,18 @@
 # ci-doctor - inspect and fix the youtrack CI check service from the terminal
 #
 # Run it on the service host as the service user with the service env, eg:
-#   sudo -u github-webhook-listener scripts/ci-doctor.pl status
+#   sudo -u github-webhook-listener bash -lc 'scripts/ci-doctor.pl status'
 # The env file /etc/pams/service/github-webhook-listener/env (or --env-file)
 # is loaded for any ENV not already set.
+#
+# --json prints one JSON document on stdout for monitoring tools, logs go to
+# stderr. Exit code: 0 ok, 1 problem found / failed, 2 usage error.
 
 use strict;
 use warnings;
 use Getopt::Long qw(GetOptionsFromArray);
 use HTTP::Date qw(str2time);
+use JSON::XS;
 use LWP::UserAgent;
 use Mojo::Log;
 use POSIX qw(strftime);
@@ -27,36 +31,63 @@ $| = 1;
 
 my $DEFAULT_ENV_FILE = '/etc/pams/service/github-webhook-listener/env';
 
+# Each command returns a hash with an 'ok' flag, printed as text or JSON
 my %commands = (
-    'status'       => \&cmd_status,
-    'check-ticket' => \&cmd_check_ticket,
-    'check-pr'     => \&cmd_check_pr,
-    'deliveries'   => \&cmd_deliveries,
-    'redeliver'    => \&cmd_redeliver,
-    'queue'        => \&cmd_queue,
-    'sync'         => \&cmd_sync,
+    'status'       => [\&cmd_status,       \&text_status],
+    'check-ticket' => [\&cmd_check_ticket, \&text_check_ticket],
+    'check-pr'     => [\&cmd_check_pr,     \&text_check_pr],
+    'deliveries'   => [\&cmd_deliveries,   \&text_deliveries],
+    'redeliver'    => [\&cmd_redeliver,    \&text_redeliver],
+    'queue'        => [\&cmd_queue,        \&text_queue],
+    'sync'         => [\&cmd_sync,         \&text_sync],
 );
 
+my %objects;
 my @args = @ARGV;
 my %global;
 Getopt::Long::Configure('pass_through', 'require_order');
-GetOptionsFromArray(\@args, \%global, 'env-file=s', 'debug', 'help|h') or usage();
+GetOptionsFromArray(\@args, \%global, 'env-file=s', 'json', 'debug', 'help|h') or usage();
 Getopt::Long::Configure('no_pass_through');
 
 my $command = shift(@args) // '';
 usage() if ($global{help} or !$commands{$command});
 
-load_env($global{'env-file'});
-
 my $log = Mojo::Log->new(level => $global{debug} ? 'debug' : 'warn');
 
-exit($commands{$command}->(@args) ? 0 : 1);
+my $result = eval {
+    load_env($global{'env-file'});
+    $commands{$command}[0]->(@args);
+};
+
+if (!$result) {
+    my $error = $@ || "Command failed\n";
+    chomp($error);
+    if ($global{json}) {
+        print JSON::XS->new->canonical->encode({ok => JSON::XS::false, command => $command, error => $error}) . "\n";
+    }
+    else {
+        print STDERR "ERROR: $error\n";
+    }
+    exit 1;
+}
+
+$result->{command} = $command;
+$result->{ok}      = $result->{ok} ? JSON::XS::true : JSON::XS::false;
+
+if ($global{json}) {
+    print JSON::XS->new->canonical->encode($result) . "\n";
+}
+else {
+    $commands{$command}[1]->($result);
+}
+
+exit($result->{ok} ? 0 : 1);
 
 # ============================================================================ #
 
 sub usage {
-    print <<'EOF';
-Usage: ci-doctor.pl [--env-file FILE] [--debug] <command> [options]
+    print STDERR <<'EOF';
+Usage: ci-doctor.pl [--env-file FILE] [--json] [--debug] <command> [options]
 
   status                          Service health, queue and web hook redelivery state
   check-ticket "<text>" [--base BRANCH]
@@ -72,6 +103,9 @@ Usage: ci-doctor.pl [--env-file FILE] [--debug] <command> [options]
   queue drop <ROW_ID>             Remove an entry from the queue
   sync REPO [BRANCH]              Refresh branch state from github for git sync clients
                                   (clients pick it up on their next re-sync)
+
+  --json                          Print one JSON document (for monitoring tools)
+  Exit code: 0 ok, 1 problem found or failed, 2 usage error
 EOF
     exit 2;
 }
@@ -99,42 +133,40 @@ sub load_env {
 # ============================================================================ #
 
 sub github {
-    state_obj(
-        github => sub {
-            Github->new(private_key_file => $ENV{GITHUB_APP_KEY_FILE}, private_key => $ENV{GITHUB_APP_KEY}, logger => $log);
-        }
-    );
+    return $objects{github}
+      //= Github->new(private_key_file => $ENV{GITHUB_APP_KEY_FILE}, private_key => $ENV{GITHUB_APP_KEY}, logger => $log);
 }
 
 sub youtrack {
-    state_obj(youtrack => sub { Youtrack->new(logger => $log) });
+    return $objects{youtrack} //= Youtrack->new(logger => $log);
 }
 
 sub checker {
-    state_obj(checker => sub { Checker->new(youtrack => youtrack(), logger => $log, pr_branch_check => $ENV{PR_BRANCH_YT_CHECK}) });
-}
-
-my %objects;
-
-sub state_obj {
-    my ($name, $build) = @_;
-    return $objects{$name} //= $build->();
+    return $objects{checker}
+      //= Checker->new(youtrack => youtrack(), logger => $log, pr_branch_check => $ENV{PR_BRANCH_YT_CHECK});
 }
 
 # ============================================================================ #
 
-sub age {
+sub bool { return $_[0] ? JSON::XS::true : JSON::XS::false }
+
+sub age_secs {
     my ($epoch) = @_;
-    return 'never' if (!$epoch);
-    my $secs = time - $epoch;
-    return "${secs}s ago"                if ($secs < 120);
-    return int($secs / 60) . "m ago"     if ($secs < 7200);
-    return int($secs / 3600) . "h ago"   if ($secs < 172800);
+    return $epoch ? time - $epoch : undef;
+}
+
+sub age {
+    my ($secs) = @_;
+    return 'never'                     if (!defined $secs);
+    return "${secs}s ago"              if ($secs < 120);
+    return int($secs / 60) . "m ago"   if ($secs < 7200);
+    return int($secs / 3600) . "h ago" if ($secs < 172800);
     return int($secs / 86400) . "d ago";
 }
 
 sub iso {
-    return strftime('%Y-%m-%d %H:%M:%S', localtime(shift));
+    my ($epoch) = @_;
+    return $epoch ? strftime('%Y-%m-%dT%H:%M:%SZ', gmtime($epoch)) : undef;
 }
 
 sub duration {
@@ -143,18 +175,21 @@ sub duration {
     return $n * {s => 1, m => 60, h => 3600, d => 86400, '' => 1}->{$unit};
 }
 
+# Check result as data: {state: success|error|wait, desc, link}
+sub result_data {
+    my ($result) = @_;
+    return {state => 'wait', desc => 'YouTrack not reachable, the service retries later'} if (!ref($result));
+    return {state => $result->{state}, desc => $result->{desc}, link => $result->{link}};
+}
+
 sub result_line {
     my ($label, $result) = @_;
-    if (!ref($result)) {
-        printf("  %-12s WAIT     YouTrack not reachable, the service retries later\n", $label);
-        return;
-    }
     printf("  %-12s %-8s %s\n", $label, uc($result->{state}), $result->{desc} // '');
     printf("  %-12s          %s\n", '', $result->{link}) if ($result->{link});
 }
 
 # ============================================================================ #
-# Commands
+# status
 # ============================================================================ #
 
 sub cmd_status {
@@ -162,34 +197,81 @@ sub cmd_status {
     my %opt = (url => 'http://localhost/ghyt-ci');
     GetOptionsFromArray(\@args, \%opt, 'url=s') or usage();
 
-    print "Service\n";
-    my $res = LWP::UserAgent->new(timeout => 5)->get($opt{url});
-    printf("  Probe        %s %s\n", $res->code, $res->is_success ? 'ok' : ($res->decoded_content // $res->status_line));
-    printf("  Spooler      last run %s\n", age(Store::last_alive()));
-    printf("  Database     %s\n", Store::db_file());
+    my $res   = LWP::UserAgent->new(timeout => 5)->get($opt{url});
+    my $probe = eval { decode_json($res->decoded_content) };
+    $probe = {} if (ref($probe) ne 'HASH');
 
     my $prs     = Store::get_pull_requests();
     my $commits = Store::get_commits();
     my @titles  = grep { ($_->{commit_id} // '') =~ /^PRT\|/ } @{$commits};
-    my @oldest  = sort { $a <=> $b } map { $_->{created_epoch} } @{$prs}, @{$commits};
+    my ($oldest) = sort { $a <=> $b } map { $_->{created_epoch} } @{$prs}, @{$commits};
 
-    print "\nQueue\n";
-    printf("  Pull requests %d, commits %d, PR titles %d, oldest %s\n",
-        scalar(@{$prs}), @{$commits} - @titles, scalar(@titles), @oldest ? age($oldest[0]) : '-');
+    my $max_attempts = $ENV{REDELIVERY_MAX_ATTEMPTS} || 10;
+    my @failed       = map {
+        {
+            guid               => $_->{guid},
+            delivery_id        => $_->{delivery_id},
+            event              => $_->{event},
+            status_code        => $_->{status_code},
+            attempts           => $_->{attempts},
+            gave_up            => bool($_->{attempts} >= $max_attempts),
+            next_attempt       => iso($_->{next_attempt_epoch}),
+            failing_since      => iso($_->{first_failed_epoch}),
+            failing_since_secs => age_secs($_->{first_failed_epoch}),
+        }
+    } @{Store::redelivery_list()};
 
-    print "\nWeb hook redelivery\n";
-    printf("  Last scan    %s\n", age(Store::get_state_epoch('redelivery_scan')));
-    my $pending = Store::redelivery_list();
-    printf("  Failed       %d\n", scalar(@{$pending}));
-    foreach my $row (@{$pending}) {
-        printf("    %-20s %-14s status %-4s attempts %d, next %s, failing since %s\n",
-            $row->{guid}, $row->{event} // '', $row->{status_code} // 0, $row->{attempts},
-            iso($row->{next_attempt_epoch}), age($row->{first_failed_epoch}));
-    }
-
-    return $res->is_success;
+    return {
+        ok    => $res->is_success,
+        probe => {
+            url        => $opt{url},
+            code       => $res->code,
+            ok         => bool($res->is_success),
+            status     => $probe->{spooler_state},
+        },
+        spooler  => {last_run => iso(Store::last_alive()), age_secs => age_secs(Store::last_alive())},
+        database => Store::db_file(),
+        queue    => {
+            pull_requests => scalar(@{$prs}),
+            commits       => @{$commits} - @titles,
+            pr_titles     => scalar(@titles),
+            oldest_secs   => age_secs($oldest),
+        },
+        redelivery => {
+            last_scan      => iso(Store::get_state_epoch('redelivery_scan')),
+            last_scan_secs => age_secs(Store::get_state_epoch('redelivery_scan')),
+            failed_count   => scalar(@failed),
+            gave_up_count  => scalar(grep { $_->{gave_up} } @failed),
+            failed         => \@failed,
+        },
+    };
 }
 
+sub text_status {
+    my ($r) = @_;
+    print "Service\n";
+    printf("  Probe        %s %s\n", $r->{probe}{code}, $r->{probe}{ok} ? 'ok' : 'FAILED');
+    printf("  Spooler      last run %s\n", age($r->{spooler}{age_secs}));
+    printf("  Database     %s\n", $r->{database});
+
+    my $q = $r->{queue};
+    print "\nQueue\n";
+    printf("  Pull requests %d, commits %d, PR titles %d, oldest %s\n",
+        $q->{pull_requests}, $q->{commits}, $q->{pr_titles}, defined $q->{oldest_secs} ? age($q->{oldest_secs}) : '-');
+
+    my $rd = $r->{redelivery};
+    print "\nWeb hook redelivery\n";
+    printf("  Last scan    %s\n", age($rd->{last_scan_secs}));
+    printf("  Failed       %d (gave up %d)\n", $rd->{failed_count}, $rd->{gave_up_count});
+    foreach my $f (@{$rd->{failed}}) {
+        printf("    %-20s %-14s status %-4s attempts %d%s, next %s, failing since %s\n",
+            $f->{guid}, $f->{event} // '', $f->{status_code} // 0, $f->{attempts}, $f->{gave_up} ? ' (gave up)' : '',
+            $f->{next_attempt}, age($f->{failing_since_secs}));
+    }
+}
+
+# ============================================================================ #
+# check-ticket
 # ============================================================================ #
 
 sub cmd_check_ticket {
@@ -199,17 +281,29 @@ sub cmd_check_ticket {
     my $text = join(' ', @args);
     usage() if ($text eq '');
 
-    my $yt_id = youtrack()->get_ticket_id($text);
-    printf("Ticket id: %s\n", $yt_id // 'none found');
-
     my $result = defined $opt{base}
       ? checker()->evaluate_title({message => $text, base_branch => $opt{base}})
       : checker()->evaluate_commit({message => $text});
 
-    result_line(defined $opt{base} ? 'PR title' : 'Commit', $result);
-    return ref($result) && $result->{state} eq 'success';
+    my $data = result_data($result);
+    return {
+        ok        => $data->{state} eq 'success',
+        text      => $text,
+        type      => defined $opt{base} ? 'pr_title' : 'commit',
+        base      => $opt{base},
+        ticket_id => scalar(youtrack()->get_ticket_id($text)),
+        result    => $data,
+    };
 }
 
+sub text_check_ticket {
+    my ($r) = @_;
+    printf("Ticket id: %s\n", $r->{ticket_id} // 'none found');
+    result_line($r->{type} eq 'pr_title' ? 'PR title' : 'Commit', $r->{result});
+}
+
+# ============================================================================ #
+# check-pr
 # ============================================================================ #
 
 sub cmd_check_pr {
@@ -234,37 +328,53 @@ sub cmd_check_pr {
         push(@{$commits}, $head) if (ref($head) eq 'HASH');
     }
 
-    print "$pr->{html_url}\n";
-    print "  Title: $pr->{title}\n  Base: $base, State: $pr->{state}, Head: $head_sha\n\n";
-
-    my $title  = {message => $pr->{title}, base_branch => $base, git_link => $pr->{html_url}};
-    my $all_ok = 1;
-
-    result_line('PR title', checker()->evaluate_title($title));
+    my $title = {message => $pr->{title}, base_branch => $base, git_link => $pr->{html_url}};
+    my $ok    = 1;
+    my @rows;
 
     foreach my $commit (@{$commits}) {
         my $message = $commit->{commit}{message} // '';
         my $is_head = $commit->{sha} eq $head_sha;
-        my $result  = checker()->evaluate_commit({message => $message}, $is_head ? [$title] : undef);
+        my $result  = result_data(checker()->evaluate_commit({message => $message}, $is_head ? [$title] : undef));
 
-        my ($first_line) = split(/\n/, $message);
-        printf("\n  %s%s  %s\n", substr($commit->{sha}, 0, 10), $is_head ? ' (head)' : '', $first_line // '');
-        result_line('Result', $result);
-        $all_ok = 0 if (!ref($result) or $result->{state} ne 'success');
+        $ok = 0 if ($result->{state} ne 'success');
+        push(@rows, {sha => $commit->{sha}, head => bool($is_head), message => (split(/\n/, $message))[0] // '', result => $result});
     }
 
     my ($state, $epoch) = $gt->get_check_state($owner, $repo, $head_sha, ($gt->is_app and !$ENV{DISABLE_CHECK_API}));
-    printf("\nPosted on head commit: %s (%s)\n", $state || 'nothing', age($epoch));
 
     if ($opt{queue}) {
         Store::init_schema();
         Store::add_pull_request($repo, $commits_url, $pr->{html_url}, $head_sha);
-        print "Queued, the service re-checks it within a few seconds\n";
     }
 
-    return $all_ok;
+    return {
+        ok          => $ok,
+        pull_request => {url => $pr->{html_url}, title => $pr->{title}, base => $base, state => $pr->{state}, head => $head_sha},
+        title       => result_data(checker()->evaluate_title($title)),
+        commits     => \@rows,
+        posted      => {state => $state || undef, updated => iso($epoch)},
+        queued      => bool($opt{queue}),
+    };
 }
 
+sub text_check_pr {
+    my ($r) = @_;
+    my $pr = $r->{pull_request};
+    print "$pr->{url}\n  Title: $pr->{title}\n  Base: $pr->{base}, State: $pr->{state}, Head: $pr->{head}\n\n";
+
+    result_line('PR title', $r->{title});
+    foreach my $c (@{$r->{commits}}) {
+        printf("\n  %s%s  %s\n", substr($c->{sha}, 0, 10), $c->{head} ? ' (head)' : '', $c->{message});
+        result_line('Result', $c->{result});
+    }
+
+    printf("\nPosted on head commit: %s (%s)\n", $r->{posted}{state} // 'nothing', $r->{posted}{updated} // '-');
+    print "Queued, the service re-checks it within a few seconds\n" if ($r->{queued});
+}
+
+# ============================================================================ #
+# deliveries / redeliver
 # ============================================================================ #
 
 sub cmd_deliveries {
@@ -277,21 +387,35 @@ sub cmd_deliveries {
 
     my %delivered = map { $_->{guid} => 1 } grep { Redelivery::is_success($_) } @{$deliveries};
 
-    my $count = 0;
+    my @list;
     foreach my $d (@{$deliveries}) {
-        next if ($opt{failed} and (Redelivery::is_success($d) or $delivered{$d->{guid}}));
-        printf("%-12s %s  %-28s %-4s %s%s\n",
-            $d->{id}, iso(str2time($d->{delivered_at}) || 0),
-            join('.', grep {$_} $d->{event}, $d->{action}),
-            $d->{status_code} // 0, $d->{guid}, $d->{redelivery} ? ' (redelivery)' : '');
-        $count++;
+        my $resolved = (Redelivery::is_success($d) or $delivered{$d->{guid}}) ? 1 : 0;
+        next if ($opt{failed} and $resolved);
+        push(@list, {
+            id           => $d->{id},
+            guid         => $d->{guid},
+            delivered_at => $d->{delivered_at},
+            event        => $d->{event},
+            action       => $d->{action},
+            status_code  => $d->{status_code},
+            redelivery   => bool($d->{redelivery}),
+            delivered    => bool($resolved),
+        });
     }
 
-    print "$count delivery(s)\n";
-    return 1;
+    my $undelivered = grep { !$_->{delivered} } @list;
+    return {ok => !$undelivered, since => $opt{since}, count => scalar(@list), undelivered => $undelivered, deliveries => \@list};
 }
 
-# ============================================================================ #
+sub text_deliveries {
+    my ($r) = @_;
+    foreach my $d (@{$r->{deliveries}}) {
+        printf("%-12s %s  %-28s %-4s %s%s\n",
+            $d->{id}, $d->{delivered_at} // '', join('.', grep {$_} $d->{event}, $d->{action}),
+            $d->{status_code} // 0, $d->{guid}, $d->{redelivery} ? ' (redelivery)' : '');
+    }
+    print "$r->{count} delivery(s), $r->{undelivered} not delivered\n";
+}
 
 sub cmd_redeliver {
     my (@args) = @_;
@@ -301,16 +425,26 @@ sub cmd_redeliver {
     if ($opt{failed}) {
         Store::init_schema();
         my $count = Redelivery->new(github => github(), logger => Mojo::Log->new(level => 'info'))->run;
-        print "$count delivery(s) redelivered\n";
-        return 1;
+        return {ok => 1, redelivered => $count};
     }
 
     my $id = $args[0] // usage();
     my $res = github()->redeliver_hook($id);
-    print $res->is_success ? "Delivery $id redelivered\n" : "Redelivery failed: " . $res->status_line . "\n";
-    return $res->is_success;
+    return {ok => $res->is_success, delivery_id => $id, redelivered => $res->is_success ? 1 : 0,
+        ($res->is_success ? () : (error => $res->status_line))};
 }
 
+sub text_redeliver {
+    my ($r) = @_;
+    if (defined $r->{delivery_id}) {
+        print $r->{ok} ? "Delivery $r->{delivery_id} redelivered\n" : "Redelivery failed: $r->{error}\n";
+        return;
+    }
+    print "$r->{redelivered} delivery(s) redelivered\n";
+}
+
+# ============================================================================ #
+# queue
 # ============================================================================ #
 
 sub cmd_queue {
@@ -319,23 +453,49 @@ sub cmd_queue {
     if (($action // '') eq 'drop') {
         usage() if (($row_id // '') !~ /^\d+$/);
         my $rows = Store::delete_queue_row($row_id);
-        print $rows > 0 ? "Removed queue entry $row_id\n" : "No queue entry $row_id\n";
-        return $rows > 0;
+        return {ok => $rows > 0, action => 'drop', row_id => $row_id + 0, removed => bool($rows > 0)};
     }
 
     usage() if (defined $action);
 
+    my @entries;
     foreach my $row (@{Store::get_pull_requests()}, @{Store::get_commits()}) {
-        my $what = $row->{event_type} eq 'pull_request'
-          ? "PR $row->{git_link}"
-          : (($row->{commit_id} // '') =~ /^PRT\|(.*)\|(\w+)$/ ? "PR title ($1) $row->{message}" : "commit $row->{commit_id}");
-        my ($first_line) = split(/\n/, $what);
-        printf("%-6s %-24s %-8s %s\n", $row->{row_id}, $row->{project}, age($row->{created_epoch}), $first_line);
+        my %entry = (row_id => $row->{row_id}, project => $row->{project}, age_secs => age_secs($row->{created_epoch}));
+
+        if ($row->{event_type} eq 'pull_request') {
+            @entry{qw(type pull_request head)} = ('pull_request', $row->{git_link}, $row->{commit_id});
+        }
+        elsif (($row->{commit_id} // '') =~ /^PRT\|(.*)\|(\w+)$/) {
+            @entry{qw(type base head title pull_request)} = ('pr_title', $1, $2, $row->{message}, $row->{git_link});
+        }
+        else {
+            @entry{qw(type sha message pull_request)} =
+              ('commit', $row->{commit_id}, (split(/\n/, $row->{message} // ''))[0], $row->{git_link});
+        }
+        push(@entries, \%entry);
     }
 
-    return 1;
+    return {ok => 1, count => scalar(@entries), entries => \@entries};
 }
 
+sub text_queue {
+    my ($r) = @_;
+    if (($r->{action} // '') eq 'drop') {
+        print $r->{removed} ? "Removed queue entry $r->{row_id}\n" : "No queue entry $r->{row_id}\n";
+        return;
+    }
+
+    foreach my $e (@{$r->{entries}}) {
+        my $what = $e->{type} eq 'pull_request' ? "PR $e->{pull_request}"
+          : $e->{type} eq 'pr_title' ? "PR title ($e->{base}) $e->{title}"
+          :                            "commit $e->{sha} $e->{message}";
+        printf("%-6s %-24s %-8s %s\n", $e->{row_id}, $e->{project}, age($e->{age_secs}), $what);
+    }
+    print "$r->{count} entry(s)\n";
+}
+
+# ============================================================================ #
+# sync
 # ============================================================================ #
 
 sub cmd_sync {
@@ -347,7 +507,7 @@ sub cmd_sync {
     my $git_url  = ($ENV{GITHUB_GIT_URL} || 'https://github.com') =~ s{/+$}{}r;
 
     Store::init_schema();
-    my $count = 0;
+    my @updated;
     foreach my $b (@{$branches}) {
         next if (defined $branch and $b->{name} ne $branch);
         Store::update_repo_state(
@@ -359,10 +519,14 @@ sub cmd_sync {
                 remote_url       => "$git_url/" . $gt->org . "/$repo.git",
             }
         );
-        printf("%-30s %s\n", $b->{name}, $b->{commit}{sha});
-        $count++;
+        push(@updated, {branch => $b->{name}, sha => $b->{commit}{sha}});
     }
 
-    print "$count branch(es) updated, git sync clients fetch them on their next re-sync\n";
-    return $count > 0;
+    return {ok => scalar(@updated) > 0, repo => $repo, branches => \@updated};
+}
+
+sub text_sync {
+    my ($r) = @_;
+    printf("%-30s %s\n", $_->{branch}, $_->{sha}) for (@{$r->{branches}});
+    printf("%d branch(es) updated, git sync clients fetch them on their next re-sync\n", scalar(@{$r->{branches}}));
 }

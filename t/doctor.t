@@ -4,6 +4,7 @@ use Test::More;
 use Mojo::File qw(path tempdir);
 use Mojo::UserAgent;
 use POSIX qw(strftime);
+use Mojo::JSON qw(decode_json);
 use Crypt::OpenSSL::RSA;
 
 use FindBin;
@@ -46,6 +47,28 @@ sub doctor {
 
 my $sha = sub { $_[0] x 40 };
 
+# JSON output: exactly one JSON document on stdout
+sub doctor_json {
+    my $cmd  = join(' ', map {"'$_'"} '--json', @_);
+    my $keep = join(' ', map {"$_='$ENV{$_}'"} grep { defined $ENV{$_} } qw(PATH HOME PERL5LIB));
+
+    # stdout only, logs go to stderr
+    my $out  = `env -i $keep $^X $FindBin::Bin/../scripts/ci-doctor.pl --env-file $tmp/env $cmd 2>/dev/null`;
+    my $rc   = $? >> 8;
+    my $data = eval { decode_json($out) };
+    ok($data, "valid JSON for @_") or diag($out);
+    return ($rc, booleans($data // {}));
+}
+
+# JSON true / false as 1 / 0 for comparisons
+sub booleans {
+    my ($d) = @_;
+    return [map { booleans($_) } @{$d}] if (ref($d) eq 'ARRAY');
+    return {map { $_ => booleans($d->{$_}) } keys %{$d}} if (ref($d) eq 'HASH');
+    return $d ? 1 : 0 if (ref($d));
+    return $d;
+}
+
 # ---------------------------------------------------------------------------- #
 my ($rc, $out) = doctor('check-ticket', 'OPS-1: fix login');
 is($rc, 0, 'check-ticket passes');
@@ -57,6 +80,15 @@ like($out, qr/PR title should have CLUSTER-\* ticket/, 'shows the rule');
 
 ($rc, $out) = doctor('check-ticket', 'no ticket');
 is($rc, 1, 'missing ticket fails');
+
+my $json;
+($rc, $json) = doctor_json('check-ticket', '--base', 'PRODUCTION', 'CLUSTER-9 deploy');
+is($rc, 0, 'json: exit code');
+is_deeply([@{$json}{qw(command ok ticket_id type base)}], ['check-ticket', 1, 'CLUSTER-9', 'pr_title', 'PRODUCTION'], 'json: fields');
+is($json->{result}{state}, 'success', 'json: result');
+
+($rc, $json) = doctor_json('check-ticket', 'no ticket');
+is_deeply([$rc, $json->{ok}, $json->{result}{state}], [1, 0, 'error'], 'json: failure');
 
 # ---------------------------------------------------------------------------- #
 mock_state(
@@ -75,12 +107,20 @@ like($out, qr/PR title\s+ERROR\s+PR title should have CLUSTER/, 'title failure s
 like($out, qr/eeeeeeeeee.*\n\s+Result\s+SUCCESS/, 'non head commit passes');
 like($out, qr/ffffffffff \(head\).*\n\s+Result\s+ERROR/, 'head commit fails on the title');
 
+($rc, $json) = doctor_json('check-pr', 'exceleron/RepoA#5');
+is($json->{ok}, 0, 'json: check-pr not ok');
+is($json->{title}{state}, 'error', 'json: title result');
+is_deeply([map { [$_->{sha}, $_->{head}, $_->{result}{state}] } @{$json->{commits}}],
+    [[$sha->('e'), 0, 'success'], [$sha->('f'), 1, 'error']], 'json: commit results');
+
 ($rc, $out) = doctor('check-pr', '--queue', 'exceleron/RepoA#5');
 like($out, qr/Queued/, 'queued for re-check');
 
 ($rc, $out) = doctor('queue');
 like($out, qr{PR https://github.com/exceleron/RepoA/pull/5}, 'queue lists the PR');
-my ($row_id) = ($out =~ /^(\d+)\s/m);
+($rc, $json) = doctor_json('queue');
+is($json->{entries}[0]{type}, 'pull_request', 'json: queue entry');
+my $row_id = $json->{entries}[0]{row_id};
 ($rc, $out) = doctor('queue', 'drop', $row_id);
 is($rc, 0, 'queue drop');
 ($rc, $out) = doctor('queue');
@@ -105,6 +145,10 @@ like($out, qr/Delivery 11 redelivered/, 'manual redelivery');
 ($rc, $out) = doctor('redeliver', '--failed');
 like($out, qr/1 delivery\(s\) redelivered/, 'automatic redelivery run on demand');
 
+($rc, $json) = doctor_json('deliveries', '--failed');
+is_deeply([$rc, $json->{undelivered}, $json->{deliveries}[0]{guid}, $json->{deliveries}[0]{status_code}], [1, 1, 'g-fail', 502],
+    'json: undelivered deliveries, exit 1');
+
 my @jwt_calls = grep { $_->{path} =~ m{/app/hook/deliveries} } @{$ua->get("$mock/_calls")->result->json};
 ok((@jwt_calls and !grep { ($_->{auth} // '') !~ /^Bearer eyJ/ } @jwt_calls), 'delivery API called with the app JWT');
 
@@ -115,6 +159,20 @@ like($out, qr/main\s+a{40}.*1 branch\(es\) updated/s, 'sync updates branch state
 
 ($rc, $out) = doctor('status', '--url', "$mock/_calls");
 like($out, qr/Probe\s+200 ok/, 'status probe');
-like($out, qr/Failed\s+1\n\s+g-fail\s+push/, 'status shows pending redelivery');
+like($out, qr/Failed\s+1 \(gave up 0\)\n\s+g-fail\s+push/, 'status shows pending redelivery');
+
+($rc, $json) = doctor_json('status', '--url', "$mock/_calls");
+is($json->{ok}, 1, 'json: status ok');
+is($json->{probe}{code}, 200, 'json: probe');
+is($json->{redelivery}{failed_count}, 1, 'json: failed redeliveries');
+is($json->{redelivery}{failed}[0]{guid}, 'g-fail', 'json: failed delivery');
+ok(exists $json->{queue}{oldest_secs}, 'json: queue');
+
+($rc, $json) = doctor_json('status', '--url', 'http://127.0.0.1:9/ghyt-ci');
+is_deeply([$rc, $json->{ok}, $json->{probe}{ok}], [1, 0, 0], 'json: probe down, exit 1');
+
+($rc, $json) = doctor_json('check-pr', 'exceleron/RepoA#404');
+is_deeply([$rc, $json->{ok}], [1, 0], 'json: error as JSON');
+like($json->{error}, qr/not found/, 'json: error message');
 
 done_testing;
