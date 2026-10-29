@@ -209,6 +209,86 @@ sub _installation_token_request {
 }
 
 # ============================================================================ #
+# GitHub App web hook deliveries (authenticated with the app JWT)
+# ============================================================================ #
+
+sub _app_request {
+    my ($self, $method, $url) = @_;
+
+    if (!$self->is_app) {
+        return _error_response(400, 'Web hook deliveries need github app authentication', 0);
+    }
+
+    $self->read_file;
+    my $jwt = eval { $self->get_jwt_token };
+    return _error_response(500, "Failed to create github app JWT: $@", 0) if (!$jwt);
+
+    my $req = HTTP::Request->new($method => $url);
+    $req->header(Authorization          => "Bearer $jwt");
+    $req->header(Accept                 => 'application/vnd.github+json');
+    $req->header('X-GitHub-Api-Version' => '2022-11-28');
+
+    my $res = $self->ua->request($req);
+    if (!$res->is_success) {
+        my $msg = substr($res->decoded_content // '', 0, 500);
+        $self->logger->error("$method $url failed: " . $res->status_line . " $msg");
+    }
+
+    return $res;
+}
+
+# ============================================================================ #
+
+# Web hook deliveries of the app delivered at or after $since (epoch), newest
+# first. Returns array ref or undef on failure.
+sub get_hook_deliveries {
+    my ($self, $since, $max_pages) = @_;
+
+    $max_pages //= 50;
+    my $url = _with_query($self->api_path('app', 'hook', 'deliveries'), per_page => 100);
+    my @all;
+
+    while ($url and $max_pages-- > 0) {
+        my $res = $self->_app_request(GET => $url);
+        return if (!$res->is_success);
+
+        my $page = $self->_decode($res, $url);
+        return if (ref($page) ne 'ARRAY');
+
+        my $older = 0;
+        foreach my $delivery (@{$page}) {
+            my $at = str2time($delivery->{delivered_at} // '') || 0;
+            if ($since and $at < $since) {
+                $older = 1;
+                next;
+            }
+            push(@all, $delivery);
+        }
+        last if ($older);
+
+        $url = undef;
+        foreach my $link (split(/,/, $res->header('Link') // '')) {
+            $url = $1 if ($link =~ /<([^>]+)>\s*;\s*rel="?next"?/);
+        }
+        $url = undef if ($url and index($url, $self->api_url . '/') != 0);
+    }
+
+    return \@all;
+}
+
+# ============================================================================ #
+
+# Ask github to deliver the given web hook delivery again
+sub redeliver_hook {
+    my ($self, $delivery_id) = @_;
+
+    return _error_response(400, 'Invalid delivery id', 0) if (($delivery_id // '') !~ /^\d+$/);
+
+    my $url = $self->api_path('app', 'hook', 'deliveries', $delivery_id, 'attempts');
+    return $self->_app_request(POST => $url);
+}
+
+# ============================================================================ #
 
 sub get_jwt_token {
     my $self = shift;

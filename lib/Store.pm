@@ -67,6 +67,20 @@ sub init_schema {
 
     $db->do(q/CREATE TABLE IF NOT EXISTS SpoolerState (name TEXT PRIMARY KEY, updated_epoch INTEGER NOT NULL)/);
 
+    # Failed github web hook deliveries waiting for redelivery, by delivery guid
+    $db->do(
+        q/CREATE TABLE IF NOT EXISTS WebhookRedelivery (
+            guid TEXT PRIMARY KEY,
+            delivery_id INTEGER NOT NULL,
+            event TEXT NULL,
+            status_code INTEGER NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_epoch INTEGER NOT NULL,
+            first_failed_epoch INTEGER NOT NULL,
+            updated_epoch INTEGER NOT NULL
+        )/
+    );
+
     $db->do(q/CREATE INDEX IF NOT EXISTS idx_push_event_type ON GitPushEvent (event_type, created_epoch)/);
     $db->do(q/CREATE INDEX IF NOT EXISTS idx_push_event_commit ON GitPushEvent (project, commit_id)/);
     $db->do(q/CREATE INDEX IF NOT EXISTS idx_repo_state ON GitRepoState (project, ref)/);
@@ -157,6 +171,14 @@ sub delete_commit {
 
 # ============================================================================ #
 
+# Remove one queue entry by its rowid (manual clean up)
+sub delete_queue_row {
+    my ($row_id) = @_;
+    return dbh()->do(q/DELETE FROM GitPushEvent WHERE rowid = ?/, undef, $row_id);
+}
+
+# ============================================================================ #
+
 sub txn {
     my ($code) = @_;
     my $db = dbh();
@@ -226,8 +248,77 @@ sub update_alive {
 # ============================================================================ #
 
 sub last_alive {
-    my ($epoch) = dbh()->selectrow_array(q/SELECT updated_epoch FROM SpoolerState WHERE name = 'spooler'/);
+    return get_state_epoch('spooler');
+}
+
+# ============================================================================ #
+
+# Named timestamps kept in SpoolerState (eg: last redelivery scan)
+sub get_state_epoch {
+    my ($name) = @_;
+    my ($epoch) = dbh()->selectrow_array(q/SELECT updated_epoch FROM SpoolerState WHERE name = ?/, undef, $name);
     return $epoch;
+}
+
+sub set_state_epoch {
+    my ($name, $epoch) = @_;
+    dbh()->do(
+        q/INSERT INTO SpoolerState (name, updated_epoch) VALUES (?, ?)
+          ON CONFLICT(name) DO UPDATE SET updated_epoch = excluded.updated_epoch/, undef, $name, $epoch
+    );
+    return $epoch;
+}
+
+# ============================================================================ #
+# Web hook redelivery
+# ============================================================================ #
+
+# Record a failed delivery, keeps the attempt count of an already known guid
+sub redelivery_failed {
+    my ($delivery, $now) = @_;
+    my $db = dbh();
+
+    my $rows = $db->do(
+        q/UPDATE WebhookRedelivery SET delivery_id = ?, status_code = ?, updated_epoch = ?
+          WHERE guid = ? AND delivery_id < ?/, undef,
+        $delivery->{id}, $delivery->{status_code}, $now, $delivery->{guid}, $delivery->{id}
+    );
+
+    return if ($rows > 0);
+
+    $db->do(
+        q/INSERT OR IGNORE INTO WebhookRedelivery
+          (guid, delivery_id, event, status_code, attempts, next_attempt_epoch, first_failed_epoch, updated_epoch)
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?)/, undef,
+        $delivery->{guid}, $delivery->{id}, $delivery->{event}, $delivery->{status_code}, $now, $now, $now
+    );
+}
+
+sub redelivery_succeeded {
+    my ($guid) = @_;
+    return dbh()->do(q/DELETE FROM WebhookRedelivery WHERE guid = ?/, undef, $guid);
+}
+
+sub redelivery_due {
+    my ($now, $max_attempts) = @_;
+    return dbh()->selectall_arrayref(
+        q/SELECT * FROM WebhookRedelivery WHERE next_attempt_epoch <= ? AND attempts < ? ORDER BY first_failed_epoch/,
+        {Slice => {}}, $now, $max_attempts);
+}
+
+sub redelivery_attempted {
+    my ($guid, $attempts, $next_epoch) = @_;
+    return dbh()->do(q/UPDATE WebhookRedelivery SET attempts = ?, next_attempt_epoch = ?, updated_epoch = ? WHERE guid = ?/,
+        undef, $attempts, $next_epoch, time, $guid);
+}
+
+sub redelivery_list {
+    return dbh()->selectall_arrayref(q/SELECT * FROM WebhookRedelivery ORDER BY first_failed_epoch/, {Slice => {}});
+}
+
+sub redelivery_cleanup {
+    my ($before) = @_;
+    return dbh()->do(q/DELETE FROM WebhookRedelivery WHERE first_failed_epoch < ?/, undef, $before);
 }
 
 # ============================================================================ #

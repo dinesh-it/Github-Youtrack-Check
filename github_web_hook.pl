@@ -18,6 +18,8 @@ use lib "$FindBin::Bin/lib";
 use Github;
 use Youtrack;
 use Store;
+use Checker;
+use Redelivery;
 use SecureChannel;
 
 $| = 1;
@@ -54,17 +56,6 @@ else {
     $log->warn("GH_WEBSOCKET_SECRET not set, git sync websocket is disabled");
 }
 
-# eg: 'PRODUCTION*=CLUSTER-*' - PR title against a branch matching the left
-# regex must have a ticket matching the right regex
-my ($pr_branch_re, $pr_ticket_re, $pr_branch_desc, $pr_ticket_desc);
-if (my $br_check = $ENV{PR_BRANCH_YT_CHECK}) {
-    ($pr_branch_desc, $pr_ticket_desc) = split(/=/, $br_check, 2);
-    if (!defined $pr_ticket_desc or $pr_branch_desc eq '' or $pr_ticket_desc eq '') {
-        die "PR_BRANCH_YT_CHECK must be in 'branch_regex=ticket_regex' format\n";
-    }
-    $pr_branch_re = eval { qr/$pr_branch_desc/i } or die "Invalid PR_BRANCH_YT_CHECK branch regex: $@";
-    $pr_ticket_re = eval { qr/$pr_ticket_desc/i } or die "Invalid PR_BRANCH_YT_CHECK ticket regex: $@";
-}
 
 my $max_retry_age  = $ENV{MAX_RETRY_AGE}  || 24 * 3600;
 my $probe_max_age  = $ENV{PROBE_MAX_AGE}  || 120;
@@ -78,6 +69,10 @@ my $gt = Github->new(
 );
 my $yt_obj = Youtrack->new(logger => $log);
 
+# PR_BRANCH_YT_CHECK eg: 'PRODUCTION*=CLUSTER-*' - PR title against a branch
+# matching the left regex must have a ticket matching the right regex
+my $checker = Checker->new(youtrack => $yt_obj, logger => $log, pr_branch_check => $ENV{PR_BRANCH_YT_CHECK});
+
 die "Failed to get github access token\n" if (!$gt->get_access_token);
 
 # Use checks API if the token belongs to github app and DISABLE_CHECK_API env is not set
@@ -85,6 +80,10 @@ my $use_checks_api = ($gt->is_app and $gt->private_key_file and !$ENV{DISABLE_CH
 
 Store::init_schema();
 Store::update_alive();
+
+# Failed github web hook deliveries are redelivered (github app only)
+my $redelivery          = Redelivery->new(github => $gt, logger => $log);
+my $redelivery_interval = $ENV{REDELIVERY_INTERVAL} // 300;
 
 my $server_start_time = time;
 
@@ -705,7 +704,7 @@ sub check_all_commits {
             next;
         }
 
-        my $result = evaluate_commit($commit, $titles);
+        my $result = $checker->evaluate_commit($commit, $titles);
 
         # YouTrack is not reachable, try again later
         return if ($result eq 'WAIT');
@@ -734,7 +733,7 @@ sub check_stale_titles {
         my $first = $titles->{$key}[0];
         next if (Store::has_pending_pull_request($first->{project}));
 
-        my $result = evaluate_titles($titles->{$key}, {state => 'success'});
+        my $result = $checker->evaluate_titles($titles->{$key}, {state => 'success'});
         return if ($result eq 'WAIT');
 
         my $done = 1;
@@ -747,108 +746,6 @@ sub check_stale_titles {
             $yt_obj->add_pr_link_to_comment(@{$_}) for (@{$result->{comments}});
         }
     }
-}
-
-# ============================================================================ #
-
-# Returns 'WAIT' or { state, desc, link, comments => [[ticket, pr_link]] }
-sub evaluate_commit {
-    my ($commit, $titles) = @_;
-
-    my $message = $commit->{message} // '';
-    my $yt_id   = $yt_obj->get_ticket_id($message);
-    my $result  = {comments => []};
-
-    if (!$yt_id) {
-        if ($message =~ /^Merge /) {
-            $log->info("Message: \"$message\" - check skipped for merge commit");
-            $result->{state} = 'success';
-            $result->{desc}  = 'Check skipped for merge commit';
-        }
-        else {
-            $log->error("Message: \"$message\" does not have a matching youtrack Id");
-            $result->{state} = 'error';
-            $result->{desc}  = 'Youtrack ticket not mentioned in the commit message';
-        }
-    }
-    else {
-        my $ticket = $yt_obj->get_ticket($yt_id);
-
-        return 'WAIT' if ($ticket and ($ticket->{Link} // '') eq 'WAIT');
-
-        if (!$ticket) {
-            $log->error("Valid YouTrack ticket not found with Id: $yt_id");
-            $result->{state} = 'error';
-            $result->{desc}  = "Unable to find youtrack issue id $yt_id, Please verify!";
-        }
-        else {
-            $result->{state} = 'success';
-            $result->{desc}  = $yt_id . ': ' . ($ticket->{summary} // '');
-            $result->{link}  = $ticket->{Link};
-            push(@{$result->{comments}}, [$yt_id, $commit->{git_link}]) if ($commit->{git_link});
-        }
-    }
-
-    return $result if ($result->{state} ne 'success' or !$titles);
-
-    # Head commit of pull request(s), all PR titles must pass too
-    return evaluate_titles($titles, $result);
-}
-
-# ============================================================================ #
-
-sub evaluate_titles {
-    my ($titles, $result) = @_;
-
-    $result->{comments} //= [];
-
-    foreach my $title (@{$titles}) {
-        my $tr = evaluate_title($title);
-        return 'WAIT' if ($tr eq 'WAIT');
-
-        if ($tr->{state} ne 'success') {
-            return {%{$tr}, comments => $result->{comments}};
-        }
-
-        $result->{desc} = $tr->{desc};
-        $result->{link} //= $tr->{link};
-        push(@{$result->{comments}}, @{$tr->{comments}});
-    }
-
-    return $result;
-}
-
-# ============================================================================ #
-
-sub evaluate_title {
-    my ($title) = @_;
-
-    my $yt_id = $yt_obj->get_ticket_id($title->{message});
-
-    if (!$yt_id) {
-        $log->error("PR Title: \"$title->{message}\" does not have a youtrack Id");
-        return {state => 'error', desc => 'Youtrack ticket not mentioned in the PR title'};
-    }
-
-    if ($pr_branch_re and $title->{base_branch} =~ $pr_branch_re and $yt_id !~ $pr_ticket_re) {
-        $log->error("PR Title: \"$title->{message}\" does not have a $pr_ticket_desc youtrack Id");
-        return {state => 'error', desc => "PR title should have $pr_ticket_desc ticket for $pr_branch_desc branch"};
-    }
-
-    my $ticket = $yt_obj->get_ticket($yt_id);
-    return 'WAIT' if ($ticket and ($ticket->{Link} // '') eq 'WAIT');
-
-    if (!$ticket) {
-        $log->error("Valid YouTrack ticket not found with Id: $yt_id");
-        return {state => 'error', desc => "Unable to find youtrack issue id $yt_id, Please verify!"};
-    }
-
-    return {
-        state    => 'success',
-        desc     => $yt_id . ': ' . ($ticket->{summary} // ''),
-        link     => $ticket->{Link},
-        comments => $title->{git_link} ? [[$yt_id, $title->{git_link}]] : [],
-    };
 }
 
 # ============================================================================ #
@@ -1045,11 +942,18 @@ $loop->recurring(300 => sub { run_job(poll => \&poll_github) });
 
 $loop->recurring(25 => sub { run_job(alive => \&Store::update_alive) });
 
+if ($redelivery_interval > 0) {
+    $loop->recurring($redelivery_interval => sub { run_job(redelivery => sub { $redelivery->run }) });
+}
+
 $loop->next_tick(
     sub {
         run_job(poll          => \&poll_github);
         run_job(pull_requests => \&process_pull_requests);
         run_job(commits       => \&check_all_commits);
+
+        # Catch up deliveries which failed while the service was down
+        run_job(redelivery => sub { $redelivery->run }) if ($redelivery_interval > 0);
     }
 );
 

@@ -26,6 +26,7 @@ sub reset_state {
         tickets      => {'OPS-1' => 'Fix login', 'OPS-2' => 'Add report', 'OPS-3' => 'Fix sync', 'CLUSTER-9' => 'Deploy release'},
         fail         => {},
         comments     => {},
+        deliveries   => [],
     );
     @calls = ();
 }
@@ -69,6 +70,20 @@ post '/gh/app/installations/:id/access_tokens' => sub {
     my $body  = $c->req->json // {};
     my $token = $body->{repositories} ? 'ghs_ro_' . join('_', @{$body->{repositories}}) : ($body->{permissions} ? 'ghs_ro_all' : 'ghs_full');
     $c->render(json => {token => $token, expires_at => iso(time + 3600)}, status => 201);
+};
+
+get '/gh/app/hook/deliveries' => sub {
+    my $c = shift;
+    return if maybe_fail($c);
+    record($c, auth => $c->req->headers->authorization);
+    $c->render(json => [sort { $b->{id} <=> $a->{id} } @{$state{deliveries}}]);
+};
+
+post '/gh/app/hook/deliveries/:id/attempts' => sub {
+    my $c = shift;
+    return if maybe_fail($c);
+    record($c, auth => $c->req->headers->authorization);
+    $c->render(json => {}, status => 202);
 };
 
 get '/gh/orgs/:org/repos' => sub { my $c = shift; return if maybe_fail($c); $c->render(json => $state{repos}) };
@@ -166,6 +181,10 @@ post '/youtrack/api/issues/:id/comments/:cid' => sub {
 
 # Start the mock in a child process, returns (base_url, pid)
 sub start {
+
+    # Tests must never reach a real service through the caller's environment
+    delete @ENV{grep {/^(YOUTRACK_|GITHUB_|GH_)/} keys %ENV};
+
     my $port = Mojo::IOLoop::Server->generate_port;
     my $pid  = fork() // die "fork failed: $!";
 
