@@ -31,8 +31,14 @@ Helper scripts to force check pull requests without waiting for github web hook:
 `./scripts/add_pull_request.pl 'repo_owner' 'repo_name' 'pull_request_number'`
 `./scripts/add_all_open_pull.pl 'repo_owner' 'repo_name'`
 
+## Troubleshooting
+`scripts/ci-doctor.pl` - status, ticket / PR checks, web hook deliveries and redelivery, queue and git sync
+state from the terminal. Failed GitHub App web hook deliveries are redelivered automatically.
+See [troubleshooting](docs/troubleshooting.md).
+
 ## Docs
 * [Configuration](docs/configuration.md)
+* [Troubleshooting](docs/troubleshooting.md) - `ci-doctor.pl`, web hook redelivery
 * [Deployment](docs/deployment.md) - EC2 / systemd for the server and git sync clients
 * [Git sync](docs/git-sync.md) - protocol and client
 
