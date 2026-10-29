@@ -7,6 +7,10 @@
     # Optional CA file to verify the server certificate when using wss://
     #ca => '/etc/ssl/certs/micro-ci-ca.pem',
 
+    # Identifies this client, a re-connect replaces the older session of the same
+    # client id and repo list (default: host name)
+    #client_id => 'nm02',
+
     # Keep alive ping (also keeps NAT gateways from dropping the connection),
     # a connection idle for 2 x ping_interval is re-connected
     #ping_interval => 60, # in seconds

@@ -73,7 +73,12 @@ sub scan {
     my $since = $last ? $last - 120 : $now - $self->{lookback};
     $since = max($since, $now - RETENTION);
 
-    my $deliveries = $self->{github}->get_hook_deliveries($since);
+    my ($deliveries, $truncated) = $self->{github}->get_hook_deliveries($since);
+    if ($truncated) {
+        $self->{logger}->error("More web hook deliveries since the last scan than fetched, older failures are not redelivered"
+              . " - list them with ci-doctor.pl deliveries --failed --since 3d");
+    }
+
     if (!$deliveries) {
         $self->{logger}->error("Failed to get web hook deliveries from github, will try again");
         return;

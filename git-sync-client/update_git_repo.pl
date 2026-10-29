@@ -21,6 +21,7 @@ use Mojo::IOLoop;
 use Mojo::JSON qw(decode_json from_json);
 use Config::Any;
 use List::Util qw(min);
+use Sys::Hostname qw(hostname);
 
 use FindBin;
 use lib "$FindBin::Bin/../lib";
@@ -146,8 +147,9 @@ sub handle_handshake {
         $tx->send(
             {
                 json => {
-                    type     => 'auth',
-                    repos    => \@repos,
+                    type      => 'auth',
+                    client_id => $config->{client_id},
+                    repos     => \@repos,
                     response => $channel->auth_response($data->{challenge}, join(',', @repos)),
                 }
             }
@@ -241,8 +243,8 @@ sub check_for_change {
 
     log_msg('INFO', "Commit hash mismatch found for $project $remote_ref");
     return if (!fetch_repo($prj_config, $ref_config, $data, $local_ref));
+    return if (!fetch_lfs($prj_config, $data));
 
-    fetch_lfs($prj_config, $data);
     salt_fileserver_update($prj_config);
 }
 
@@ -257,8 +259,13 @@ sub fetch_repo {
     my $force_fetch = $ref_config->{force_fetch} // $prj_config->{force_fetch};
     my $refspec     = ($force_fetch ? '+' : '') . "$remote_ref:$local_ref";
 
+    # -u (update head ok) only for bare mirrors, a working tree must not get its
+    # checked out branch moved under it
+    my ($bare_status, $bare) = run_git({}, 'git', '-C', $prj_config->{local_path}, 'rev-parse', '--is-bare-repository');
+    my @update_head = ($bare_status == 0 and $bare =~ /^true/) ? ('-u') : ();
+
     log_msg('INFO', "Running git fetch $remote_url $refspec");
-    my ($status, $output) = run_git_remote($prj_config, $data, $remote_url, 'fetch', '-u', '--', $remote_url, $refspec);
+    my ($status, $output) = run_git_remote($prj_config, $data, $remote_url, 'fetch', @update_head, '--', $remote_url, $refspec);
 
     if ($status != 0) {
         log_msg('ERROR', "Git fetch failed ($status): $output");
@@ -272,43 +279,66 @@ sub fetch_repo {
 
 # ============================================================================ #
 
-# Fetch LFS objects for repos which use git LFS
+# Fetch LFS objects for repos which use git LFS, returns 0 on failure
 sub fetch_lfs {
     my ($prj_config, $data) = @_;
 
-    return if (!-d "$prj_config->{local_path}/lfs");
+    return 1 if (!-d "$prj_config->{local_path}/lfs");
 
-    my $remote_url = remote_url($prj_config, $data) or return;
+    my $remote_url = remote_url($prj_config, $data) or return 0;
 
     log_msg('INFO', "Running git lfs fetch --all $remote_url");
     my ($status, $output) = run_git_remote($prj_config, $data, $remote_url, 'lfs', 'fetch', '--all', '--prune', $remote_url);
 
     if ($status != 0) {
         log_msg('ERROR', "Git LFS fetch failed ($status): $output");
-        return;
+        return 0;
     }
 
     log_msg('INFO', "LFS fetch done!");
+    return 1;
 }
 
 # ============================================================================ #
 
-# Refresh the salt fileserver cache for repos served by salt (salt master only)
+# Refresh the salt fileserver cache for repos served by salt (salt master
+# only). Runs in a sub process so a slow salt-run does not block the websocket,
+# requests while one is running are merged into one more run.
+my ($fileserver_running, $fileserver_pending);
+
 sub salt_fileserver_update {
     my ($prj_config) = @_;
 
-    return if (!$prj_config->{salt_fileserver_update});
+    return if ($prj_config and !$prj_config->{salt_fileserver_update});
 
-    my @cmd = @{$config->{fileserver_update_command}};
-    log_msg('INFO', "Running @cmd");
-
-    my ($status, $output) = run_git({}, @cmd);
-    if ($status != 0) {
-        log_msg('WARN', "@cmd failed ($status): $output");
+    if ($fileserver_running) {
+        $fileserver_pending = 1;
         return;
     }
 
-    log_msg('INFO', "@cmd done");
+    my @cmd = @{$config->{fileserver_update_command}};
+    log_msg('INFO', "Running @cmd");
+    $fileserver_running = 1;
+
+    Mojo::IOLoop->subprocess->run(
+        sub { return run_git({}, @cmd) },
+        sub {
+            my ($subprocess, $err, $status, $output) = @_;
+            $fileserver_running = 0;
+
+            if ($err or $status != 0) {
+                log_msg('WARN', "@cmd failed (" . ($err || $status) . "): " . ($output // ''));
+            }
+            else {
+                log_msg('INFO', "@cmd done");
+            }
+
+            if ($fileserver_pending) {
+                $fileserver_pending = 0;
+                salt_fileserver_update();
+            }
+        }
+    );
 }
 
 # ============================================================================ #
@@ -445,6 +475,8 @@ sub load_config {
 
     $cfg->{allowed_remote_hosts} //= ['github.com'];
     $cfg->{ping_interval}        //= 60;
+    $cfg->{client_id}            //= hostname();
+    die "Invalid client_id '$cfg->{client_id}' in config\n" if ($cfg->{client_id} !~ /\A[A-Za-z0-9_.:-]{1,100}\z/);
     $cfg->{resync_interval}      //= 180;
     $cfg->{fileserver_update_command} //= ['salt-run', 'fileserver.update'];
     $cfg->{allowed_owners}       //= ['exceleron'];
