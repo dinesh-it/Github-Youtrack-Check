@@ -65,3 +65,4 @@ If GITHUB_APP_KEY_FILE is set, github checks API will be used to better utilise 
 | REDELIVERY_INTERVAL | 300 | Seconds between scans for failed GitHub App web hook deliveries, `0` disables redelivery |
 | REDELIVERY_MAX_ATTEMPTS | 10 | Redeliveries per failed delivery (backoff 5m, 10m, 20m ... max 6h) |
 | REDELIVERY_LOOKBACK | 21600 | Seconds of deliveries scanned on the very first run |
+| GITHUB_HOOK_CIDRS | the micro-ci security group ranges | Comma separated IPv4 ranges allowed to reach the service, `ci-doctor.pl status` fails when github sends web hooks from a range outside them |

@@ -33,6 +33,11 @@ $| = 1;
 
 my @DEFAULT_ENV_FILES = ('/etc/pams/service/github-webhook-listener/env', "$FindBin::Bin/../local/.env", "$FindBin::Bin/../.env");
 
+# GitHub web hook IP ranges allowed to reach the service, same as the micro-ci
+# security group (tf-aws-network app-vpc/securitygroups.tf), GITHUB_HOOK_CIDRS overrides
+my @DEFAULT_HOOK_CIDRS = qw(140.82.112.0/20 185.199.108.0/22 192.30.252.0/22 143.55.64.0/20
+  9.234.106.48/28 9.234.98.160/28 9.234.98.176/28);
+
 # Each command returns a hash with an 'ok' flag, printed as text or JSON
 my %commands = (
     'status'       => [\&cmd_status,       \&text_status],
@@ -245,8 +250,11 @@ sub cmd_status {
         }
     } @{Store::list_check_failures(time - 24 * 3600)};
 
+    my $hook_ips = hook_ips_check();
+
     return {
-        ok    => $res->is_success,
+        ok    => ($res->is_success and !@{$hook_ips->{not_allowed}}),
+        hook_ips => $hook_ips,
         check_failures_24h => {count => scalar(@check_failures), failures => [@check_failures[0 .. min(19, $#check_failures)]]},
         probe => {
             url        => $opt{url},
@@ -290,6 +298,17 @@ sub text_status {
     printf("    %s %-24s %s %s: %s\n", $_->{at}, $_->{project}, substr($_->{commit_id}, 0, 10), $_->{state} // '', $_->{error} // '')
       for (@{$cf->{failures}});
 
+    my $hi = $r->{hook_ips};
+    print "\nGitHub web hook IPs\n";
+    if ($hi->{error}) {
+        printf("  Check        %s\n", $hi->{error});
+    }
+    else {
+        printf("  Allowed      %d of %d github IPv4 hook range(s)\n", @{$hi->{github}} - @{$hi->{not_allowed}}, scalar(@{$hi->{github}}));
+        printf("  NOT ALLOWED  %s - deliveries from it time out, allow it in the micro-ci security group and GITHUB_HOOK_CIDRS\n", $_)
+          for (@{$hi->{not_allowed}});
+    }
+
     my $rd = $r->{redelivery};
     print "\nWeb hook redelivery\n";
     printf("  Last scan    %s\n", age($rd->{last_scan_secs}));
@@ -299,6 +318,40 @@ sub text_status {
             $f->{guid}, $f->{event} // '', $f->{status_code} // 0, $f->{attempts}, $f->{gave_up} ? ' (gave up)' : '',
             $f->{next_attempt}, age($f->{failing_since_secs}));
     }
+}
+
+# GitHub's current web hook IPv4 ranges (meta API) not covered by the allowed ones
+sub hook_ips_check {
+    my @allowed = $ENV{GITHUB_HOOK_CIDRS} ? split(/[\s,]+/, $ENV{GITHUB_HOOK_CIDRS}) : @DEFAULT_HOOK_CIDRS;
+    my $result  = {allowed => \@allowed, github => [], not_allowed => []};
+
+    my ($meta, $res) = github()->get_api_response(github()->api_path('meta'));
+    if (ref($meta) ne 'HASH' or ref($meta->{hooks}) ne 'ARRAY') {
+        $result->{error} = 'Could not get the web hook IP ranges from github: ' . ($res ? $res->status_line : 'no response');
+        return $result;
+    }
+
+    # IPv6 ranges are skipped, the security group allows IPv4 only
+    my @nets = grep {defined} map { cidr_range($_) } @allowed;
+    foreach my $cidr (@{$meta->{hooks}}) {
+        my $range = cidr_range($cidr) or next;
+        push(@{$result->{github}}, $cidr);
+        push(@{$result->{not_allowed}}, $cidr) if (!grep { $_->[0] <= $range->[0] and $range->[1] <= $_->[1] } @nets);
+    }
+    return $result;
+}
+
+# IPv4 CIDR as [first, last] address numbers, undef for anything else
+sub cidr_range {
+    my ($cidr) = @_;
+    my (@octets) = (($cidr // '') =~ m{^(\d+)\.(\d+)\.(\d+)\.(\d+)/(\d+)$}) or return;
+    my $bits = pop(@octets);
+    return if ($bits > 32 or grep { $_ > 255 } @octets);
+    my $size  = 2**(32 - $bits);
+    my $first = 0;
+    $first = $first * 256 + $_ for (@octets);
+    $first -= $first % $size;
+    return [$first, $first + $size - 1];
 }
 
 # ============================================================================ #

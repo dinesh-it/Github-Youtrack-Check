@@ -167,6 +167,21 @@ is($json->{probe}{code}, 200, 'json: probe');
 is($json->{redelivery}{failed_count}, 1, 'json: failed redeliveries');
 is($json->{redelivery}{failed}[0]{guid}, 'g-fail', 'json: failed delivery');
 ok(exists $json->{queue}{oldest_secs}, 'json: queue');
+is_deeply([scalar(@{$json->{hook_ips}{github}}), $json->{hook_ips}{not_allowed}], [5, []], 'json: github hook IPv4 ranges allowed');
+
+# A new github hook range not in the allowed ones fails the status
+mock_state(hooks => ['192.30.252.0/22', '192.30.253.0/24', '9.234.200.0/28', '2606:50c0::/32']);
+($rc, $out) = doctor('status', '--url', "$mock/_calls");
+is($rc, 1, 'status fails for a hook range not allowed');
+like($out, qr/Allowed\s+2 of 3.*\n\s+NOT ALLOWED\s+9\.234\.200\.0\/28/, 'status shows the range not allowed');
+
+($rc, $json) = doctor_json('status', '--url', "$mock/_calls");
+is_deeply([$rc, $json->{ok}, $json->{hook_ips}{not_allowed}], [1, 0, ['9.234.200.0/28']], 'json: range not allowed');
+
+mock_state(fail => {'GET /gh/meta' => {code => 500, count => 1}});
+($rc, $json) = doctor_json('status', '--url', "$mock/_calls");
+is($json->{ok}, 1, 'json: meta API failure does not fail the status');
+like($json->{hook_ips}{error}, qr/Could not get the web hook IP ranges/, 'json: meta API failure reported');
 
 ($rc, $json) = doctor_json('status', '--url', 'http://127.0.0.1:9/ghyt-ci');
 is_deeply([$rc, $json->{ok}, $json->{probe}{ok}], [1, 0, 0], 'json: probe down, exit 1');

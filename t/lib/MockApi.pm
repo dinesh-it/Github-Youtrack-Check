@@ -27,6 +27,7 @@ sub reset_state {
         fail         => {},
         comments     => {},
         deliveries   => [],
+        hooks        => ['192.30.252.0/22', '185.199.108.0/22', '140.82.112.0/20', '143.55.64.0/20', '9.234.98.160/28', '2a0a:a440::/29'],
         refs         => {},
     );
     @calls = ();
@@ -86,6 +87,8 @@ post '/gh/app/hook/deliveries/:id/attempts' => sub {
     record($c, auth => $c->req->headers->authorization);
     $c->render(json => {}, status => 202);
 };
+
+get '/gh/meta' => sub { my $c = shift; return if maybe_fail($c); $c->render(json => {hooks => $state{hooks}}) };
 
 get '/gh/orgs/:org/repos' => sub { my $c = shift; return if maybe_fail($c); $c->render(json => $state{repos}) };
 

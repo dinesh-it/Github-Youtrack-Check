@@ -11,6 +11,10 @@ iptables -I INPUT -s 0/0 -p tcp --dport 443 -j GitHubWebHooks
 iptables -I GitHubWebHooks -s 192.30.252.0/22 -j ACCEPT
 iptables -I GitHubWebHooks -s 185.199.108.0/22 -j ACCEPT
 iptables -I GitHubWebHooks -s 140.82.112.0/20 -j ACCEPT
+iptables -I GitHubWebHooks -s 143.55.64.0/20 -j ACCEPT
+iptables -I GitHubWebHooks -s 9.234.106.48/28 -j ACCEPT
+iptables -I GitHubWebHooks -s 9.234.98.160/28 -j ACCEPT
+iptables -I GitHubWebHooks -s 9.234.98.176/28 -j ACCEPT
 
 # Allow nm servers from exceleron network
 iptables -I GitHubWebHooks -s 38.140.184.196 -j ACCEPT
